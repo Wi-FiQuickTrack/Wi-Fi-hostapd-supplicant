@@ -2882,6 +2882,9 @@ static void sme_process_sa_query_response(struct wpa_supplicant *wpa_s,
 
 	wpa_dbg(wpa_s, MSG_DEBUG, "SME: Reply to pending SA Query received "
 		"from " MACSTR, MAC2STR(sa));
+	wpa_msg(wpa_s,MSG_INFO,
+		WPA_EVENT_SAQ_RESP "SA=" MACSTR " trans_id=%02x%02x", MAC2STR(sa),
+		data[1], data[2]);
 	sme_stop_sa_query(wpa_s);
 }
 
