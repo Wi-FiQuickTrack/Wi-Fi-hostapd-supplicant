@@ -298,6 +298,9 @@ extern "C" {
 #define RX_HS20_ICON "RX-HS20-ICON "
 #define RX_MBO_ANQP "RX-MBO-ANQP "
 
+#define TX_SAQ_REQ "TX-SAQ-REQ "
+#define RX_SAQ_RESP "RX-SAQ-RESP "
+
 /* parameters: <Venue Number> <Venue URL> */
 #define RX_VENUE_URL "RX-VENUE-URL "
 
