@@ -5316,6 +5316,8 @@ int wpa_auth_resend_m1(struct wpa_state_machine *sm, int change_anonce,
 	wpa_send_eapol(sm->wpa_auth, sm,
 		       WPA_KEY_INFO_ACK | WPA_KEY_INFO_KEY_TYPE, NULL,
 		       anonce, NULL, 0, 0, 0);
+	if (cb != NULL)
+		cb(ctx1, ctx2);
 	return 0;
 }
 
@@ -5493,6 +5495,8 @@ int wpa_auth_resend_m3(struct wpa_state_machine *sm,
 		       WPA_KEY_INFO_ACK | WPA_KEY_INFO_INSTALL |
 		       WPA_KEY_INFO_KEY_TYPE,
 		       _rsc, sm->ANonce, kde, pos - kde, 0, encr);
+	if (cb != NULL)
+		cb(ctx1, ctx2);
 	os_free(kde);
 	return 0;
 }
