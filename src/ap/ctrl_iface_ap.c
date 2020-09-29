@@ -303,6 +303,15 @@ static int hostapd_ctrl_iface_sta_mib(struct hostapd_data *hapd,
 		if (!os_snprintf_error(buflen - len, res))
 			len += res;
 	}
+
+#ifdef CONFIG_TESTING_OPTIONS
+	if (sta->sae && sta->sae->state == SAE_ACCEPTED) {
+		res = os_snprintf(buf + len, buflen - len, "sae_h2e=%d\n",
+				  sta->sae->h2e);
+		if (!os_snprintf_error(buflen - len, res))
+			len += res;
+	}
+#endif
 #endif /* CONFIG_SAE */
 
 	if (sta->vlan_id > 0) {
