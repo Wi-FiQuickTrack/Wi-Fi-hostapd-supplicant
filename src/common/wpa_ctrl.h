@@ -97,6 +97,8 @@ extern "C" {
 	"CTRL-EVENT-SAE-UNKNOWN-PASSWORD-IDENTIFIER "
 /** Unprotected Beacon frame dropped */
 #define WPA_EVENT_UNPROT_BEACON "CTRL-EVENT-UNPROT-BEACON "
+/** SAE authentication success */
+#define SAE_EVENT_AUTH_SUCCESS "SAE-AUTH-SUCCESS "
 /** Decision made to do a within-ESS roam */
 #define WPA_EVENT_DO_ROAM "CTRL-EVENT-DO-ROAM "
 /** Decision made to skip a within-ESS roam */
@@ -126,6 +128,8 @@ extern "C" {
 #define WPA_EVENT_FREQ_CONFLICT "CTRL-EVENT-FREQ-CONFLICT "
 /** Frequency ranges that the driver recommends to avoid */
 #define WPA_EVENT_AVOID_FREQ "CTRL-EVENT-AVOID-FREQ "
+/** Security association query response received */
+#define WPA_EVENT_SAQ_RESP "CTRL-EVENT-SAQ-RESP "
 /** Result of MSCS setup */
 #define WPA_EVENT_MSCS_RESULT "CTRL-EVENT-MSCS-RESULT "
 /** WPS overlap detected in PBC mode */
@@ -295,6 +299,9 @@ extern "C" {
 #define RX_HS20_ANQP_ICON "RX-HS20-ANQP-ICON "
 #define RX_HS20_ICON "RX-HS20-ICON "
 #define RX_MBO_ANQP "RX-MBO-ANQP "
+
+#define TX_SAQ_REQ "TX-SAQ-REQ "
+#define RX_SAQ_RESP "RX-SAQ-RESP "
 
 /* parameters: <Venue Number> <Venue URL> */
 #define RX_VENUE_URL "RX-VENUE-URL "

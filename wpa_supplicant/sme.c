@@ -1538,6 +1538,11 @@ void sme_event_auth(struct wpa_supplicant *wpa_s, union wpa_event_data *data)
 				   data->auth.status_code, data->auth.ies,
 				   data->auth.ies_len, 0, NULL);
 		if (res < 0) {
+			wpa_msg(wpa_s, MSG_INFO, WPA_EVENT_AUTH_REJECT MACSTR
+				" auth_type=%d auth_transaction=%d status_code=%d",
+				MAC2STR(data->auth.peer), data->auth.auth_type,
+				data->auth.auth_transaction, data->auth.status_code);
+
 			wpas_connection_failed(wpa_s, wpa_s->pending_bssid);
 			wpa_supplicant_set_state(wpa_s, WPA_DISCONNECTED);
 
@@ -1547,6 +1552,11 @@ void sme_event_auth(struct wpa_supplicant *wpa_s, union wpa_event_data *data)
 
 		if (sme_sae_set_pmk(wpa_s, wpa_s->pending_bssid) < 0)
 			return;
+
+		wpa_printf(MSG_DEBUG, "SME: SAE authentication succeeded");
+		wpa_msg(wpa_s, MSG_INFO, SAE_EVENT_AUTH_SUCCESS "with peer="
+			MACSTR " status_code=%d", MAC2STR(data->auth.peer),
+			data->auth.status_code);
 	}
 #endif /* CONFIG_SAE */
 
@@ -2882,6 +2892,9 @@ static void sme_process_sa_query_response(struct wpa_supplicant *wpa_s,
 
 	wpa_dbg(wpa_s, MSG_DEBUG, "SME: Reply to pending SA Query received "
 		"from " MACSTR, MAC2STR(sa));
+	wpa_msg(wpa_s,MSG_INFO,
+		WPA_EVENT_SAQ_RESP "SA=" MACSTR " trans_id=%02x%02x", MAC2STR(sa),
+		data[1], data[2]);
 	sme_stop_sa_query(wpa_s);
 }
 

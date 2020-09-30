@@ -18,6 +18,7 @@
 #include "ap_drv_ops.h"
 #include "wpa_auth.h"
 #include "ieee802_11.h"
+#include "common/wpa_ctrl.h"
 
 
 u8 * hostapd_eid_assoc_comeback_time(struct hostapd_data *hapd,
@@ -126,6 +127,9 @@ void ieee802_11_send_sa_query_req(struct hostapd_data *hapd,
 	if (hostapd_drv_send_mlme(hapd, mgmt, end - (u8 *) mgmt, 0, NULL, 0, 0)
 	    < 0)
 		wpa_printf(MSG_INFO, "ieee802_11_send_sa_query_req: send failed");
+
+	wpa_msg(hapd->msg_ctx, MSG_INFO, TX_SAQ_REQ "DA=" MACSTR " trans_id=%02x%02x",
+		MAC2STR(addr), trans_id[0], trans_id[1]);
 
 	os_free(mgmt);
 	os_free(oci_ie);
@@ -305,6 +309,10 @@ void ieee802_11_sa_query_action(struct hostapd_data *hapd,
 		    trans_id, WLAN_SA_QUERY_TR_ID_LEN);
 
 	/* MLME-SAQuery.confirm */
+
+	wpa_msg(hapd->msg_ctx,
+		MSG_INFO, RX_SAQ_RESP "SA=" MACSTR " trans_id=%02x%02x",
+		MAC2STR(sa), trans_id[0], trans_id[1]);
 
 	if (sta == NULL || sta->sa_query_trans_id == NULL) {
 		wpa_printf(MSG_DEBUG, "IEEE 802.11: No matching STA with "
