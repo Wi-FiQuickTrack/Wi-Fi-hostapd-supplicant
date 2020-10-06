@@ -5359,7 +5359,9 @@ void ieee802_11_mgmt_cb(struct hostapd_data *hapd, const u8 *buf, size_t len,
 				stype, ok, hex);
 			os_free(hex);
 		}
+#ifndef CONFIG_WFA
 		return;
+#endif
 	}
 #endif /* CONFIG_TESTING_OPTIONS */
 
