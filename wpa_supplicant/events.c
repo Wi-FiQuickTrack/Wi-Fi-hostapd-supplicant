@@ -2690,7 +2690,7 @@ static int wpa_supplicant_event_associnfo(struct wpa_supplicant *wpa_s,
 		wpa_hexdump(MSG_DEBUG, "resp_ies", data->assoc_info.resp_ies,
 			    data->assoc_info.resp_ies_len);
 
-#ifdef CONFIG_TESTING_OPTIONS
+#ifdef CONFIG_WFA
 		size_t hex_len = 2 * data->assoc_info.resp_ies_len + 1;
 		char *hex = os_malloc(hex_len);
 		if (hex) {
