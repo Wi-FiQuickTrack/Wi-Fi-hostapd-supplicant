@@ -924,6 +924,36 @@ static int hostapd_ctrl_iface_bss_tm_req(struct hostapd_data *hapd,
 		req_mode |= WNM_BSS_TM_REQ_DISASSOC_IMMINENT;
 
 #ifdef CONFIG_MBO
+
+#ifdef CONFIG_WFA
+	/* add self bssid into preferred candidate list */
+	if ((req_mode & WNM_BSS_TM_REQ_PREF_CAND_LIST_INCLUDED) && (nei_len == 0)) {
+		struct wpabuf *nr;
+		u8 pref = 100;
+
+		/* set preference to 0 for disassoc_imminent and BSS termination case
+		*/
+		if (req_mode & WNM_BSS_TM_REQ_DISASSOC_IMMINENT || 
+			req_mode & WNM_BSS_TM_REQ_BSS_TERMINATION_INCLUDED) {
+			pref = 0;
+		}
+
+		nr = wnm_get_own_neighbor_report(hapd, pref);
+		if (!nr) {
+			wpa_printf(MSG_DEBUG,
+				   "No memory for allocating neighbor_report");
+			ret = -1;
+			goto fail;
+		}
+
+		nei_rep[0] = WLAN_EID_NEIGHBOR_REPORT;
+		nei_rep[1] = wpabuf_len(nr);
+		os_memcpy(nei_rep + 2, wpabuf_head(nr), wpabuf_len(nr));
+		nei_len = wpabuf_len(nr) + 2;
+		wpabuf_free(nr);
+	}
+#endif /* CONFIG_WFA */
+
 	pos = os_strstr(cmd, "mbo=");
 	if (pos) {
 		unsigned int mbo_reason, cell_pref, reassoc_delay;

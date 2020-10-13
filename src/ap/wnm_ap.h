@@ -27,4 +27,8 @@ void ap_sta_reset_steer_flag_timer(void *eloop_ctx, void *timeout_ctx);
 int wnm_send_coloc_intf_req(struct hostapd_data *hapd, struct sta_info *sta,
 			    unsigned int auto_report, unsigned int timeout);
 
+#ifdef CONFIG_WFA
+struct wpabuf * wnm_get_own_neighbor_report(struct hostapd_data *hapd, u8 preference);
+#endif
+
 #endif /* WNM_AP_H */
