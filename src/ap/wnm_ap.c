@@ -1008,4 +1008,4 @@ struct wpabuf * wnm_get_own_neighbor_report(struct hostapd_data *hapd, u8 prefer
 	return nr;
 #endif /* NEED_AP_MLME */
 }
-#ifdef CONFIG_WFA
+#endif /* CONFIG_WFA */
