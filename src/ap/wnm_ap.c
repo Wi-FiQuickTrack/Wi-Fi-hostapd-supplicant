@@ -403,9 +403,10 @@ static int ieee802_11_send_bss_trans_mgmt_request(struct hostapd_data *hapd,
 		return -1;
 
 	buf = wpabuf_alloc(len + 2 + wpabuf_len(nr));
-	if (!buf)
+	if (!buf) {
+		wpabuf_free(nr);
 		return -1;
-
+	}
 	wpabuf_put_data(buf, &mgmt->u.action.category, len);
 	wpabuf_put_u8(buf, WLAN_EID_NEIGHBOR_REPORT);
 	wpabuf_put_u8(buf, wpabuf_len(nr));	
