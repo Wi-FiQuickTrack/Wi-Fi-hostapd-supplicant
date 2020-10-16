@@ -20,7 +20,9 @@
 #include "ap/wpa_auth.h"
 #include "mbo_ap.h"
 #include "wnm_ap.h"
-#include "ieee802_11.h"
+#ifdef CONFIG_WFA
+#include "ap/neighbor_db.h"
+#endif /* CONFIG_WFA */
 
 #define MAX_TFS_IE_LEN  1024
 
@@ -396,7 +398,7 @@ static int ieee802_11_send_bss_trans_mgmt_request(struct hostapd_data *hapd,
 	len = pos - &mgmt->u.action.category;
 #ifdef CONFIG_WFA
 	struct wpabuf *nr, *buf;
-	nr = wnm_get_own_neighbor_report(hapd, 100);
+	nr = hostapd_neighbor_get_own_report_with_pref(hapd, 100);
 	if (!nr)
 		return -1;
 
@@ -919,93 +921,3 @@ int wnm_send_coloc_intf_req(struct hostapd_data *hapd, struct sta_info *sta,
 
 	return 0;
 }
-
-#ifdef CONFIG_WFA
-struct wpabuf * wnm_get_own_neighbor_report(struct hostapd_data *hapd, u8 preference)
-{
-#ifdef NEED_AP_MLME
-	u16 capab = hostapd_own_capab_info(hapd);
-	int ht = hapd->iconf->ieee80211n && !hapd->conf->disable_11n;
-	int vht = hapd->iconf->ieee80211ac && !hapd->conf->disable_11ac;
-	int he = hapd->iconf->ieee80211ax;
-	struct wpa_ssid_value ssid;
-	u8 channel, op_class;
-	u8 center_freq1_idx = 0;
-	u32 bssid_info;
-	struct wpabuf *nr;
-
-	if (!(hapd->conf->radio_measurements[0] &
-	      WLAN_RRM_CAPS_NEIGHBOR_REPORT))
-		return NULL;
-
-	bssid_info = 3; /* AP is reachable */
-	bssid_info |= NEI_REP_BSSID_INFO_SECURITY; /* "same as the AP" */
-	bssid_info |= NEI_REP_BSSID_INFO_KEY_SCOPE; /* "same as the AP" */
-
-	if (capab & WLAN_CAPABILITY_SPECTRUM_MGMT)
-		bssid_info |= NEI_REP_BSSID_INFO_SPECTRUM_MGMT;
-
-	bssid_info |= NEI_REP_BSSID_INFO_RM; /* RRM is supported */
-
-	if (hapd->conf->wmm_enabled) {
-		bssid_info |= NEI_REP_BSSID_INFO_QOS;
-
-		if (hapd->conf->wmm_uapsd &&
-		    (hapd->iface->drv_flags & WPA_DRIVER_FLAGS_AP_UAPSD))
-			bssid_info |= NEI_REP_BSSID_INFO_APSD;
-	}
-
-	if (ht) {
-		bssid_info |= NEI_REP_BSSID_INFO_HT |
-			NEI_REP_BSSID_INFO_DELAYED_BA;
-
-		/* VHT bit added in IEEE P802.11-REVmc/D4.3 */
-		if (vht)
-			bssid_info |= NEI_REP_BSSID_INFO_VHT;
-		if (he)
-			bssid_info |= NEI_REP_BSSID_INFO_HE;
-	}
-
-	/* TODO: Set NEI_REP_BSSID_INFO_MOBILITY_DOMAIN if MDE is set */
-
-	if (ieee80211_freq_to_channel_ext(hapd->iface->freq,
-					  hapd->iconf->secondary_channel,
-					  hostapd_get_oper_chwidth(hapd->iconf),
-					  &op_class, &channel) ==
-	    NUM_HOSTAPD_MODES)
-		return NULL;
-
-	if (vht) {
-		center_freq1_idx = hostapd_get_oper_centr_freq_seg0_idx(
-			hapd->iconf);
-	} else if (ht) {
-		ieee80211_freq_to_chan(hapd->iface->freq +
-				       10 * hapd->iconf->secondary_channel,
-				       &center_freq1_idx);
-	}
-
-	ssid.ssid_len = hapd->conf->ssid.ssid_len;
-	os_memcpy(ssid.ssid, hapd->conf->ssid.ssid, ssid.ssid_len);
-
-	/*
-	 * Neighbor Report element size = BSSID + BSSID info + op_class + chan +
-	 * phy type + BSS transition Candidate subelement.
-	 */
-	nr = wpabuf_alloc(ETH_ALEN + 4 + 1 + 1 + 1 + 3);
-	if (!nr)
-		return NULL;
-
-	wpabuf_put_data(nr, hapd->own_addr, ETH_ALEN);
-	wpabuf_put_le32(nr, bssid_info);
-	wpabuf_put_u8(nr, op_class);
-	wpabuf_put_u8(nr, channel);
-	wpabuf_put_u8(nr, ieee80211_get_phy_type(hapd->iface->freq, ht, vht));
-
-	wpabuf_put_u8(nr, WNM_NEIGHBOR_BSS_TRANSITION_CANDIDATE);
-	wpabuf_put_u8(nr, 1);
-	wpabuf_put_u8(nr, preference);
-
-	return nr;
-#endif /* NEED_AP_MLME */
-}
-#endif /* CONFIG_WFA */

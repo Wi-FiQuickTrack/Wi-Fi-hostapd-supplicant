@@ -20,7 +20,7 @@
 #include "sta_info.h"
 #include "gas_serv.h"
 #ifdef CONFIG_WFA
-#include "wnm_ap.h"
+#include "neighbor_db.h"
 #endif /* CONFIG_WFA */
 
 #ifdef CONFIG_DPP
@@ -609,7 +609,8 @@ static void anqp_add_domain_name(struct hostapd_data *hapd, struct wpabuf *buf)
 static void anqp_add_neighbor_report(struct hostapd_data *hapd, struct wpabuf *buf)
 {
 	struct wpabuf *nr;
-	nr = wnm_get_own_neighbor_report(hapd, 100);
+
+	nr = hostapd_neighbor_get_own_report_with_pref(hapd, 100);
 	if (!nr)
 		return;
 

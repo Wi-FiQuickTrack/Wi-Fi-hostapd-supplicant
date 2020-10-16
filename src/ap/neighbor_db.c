@@ -316,3 +316,31 @@ void hostapd_neighbor_set_own_report(struct hostapd_data *hapd)
 	wpabuf_free(nr);
 #endif /* NEED_AP_MLME */
 }
+
+#ifdef CONFIG_WFA
+struct wpabuf * hostapd_neighbor_get_own_report_with_pref(
+			 struct hostapd_data *hapd, u8 pref) 
+{
+	struct hostapd_neighbor_entry *own_nr;
+	struct wpabuf *nr;
+
+	own_nr = hostapd_neighbor_get(hapd, hapd->own_addr, NULL);
+	if (!own_nr || !own_nr->nr) {
+		wpa_printf(MSG_DEBUG, "failed to get own neighbor report\n");
+		return 0;
+	}
+
+	/* add BSS transition Candidate subelement */
+	nr = wpabuf_alloc(wpabuf_len(own_nr->nr) + 3);
+	if (!nr)
+		return 0;
+
+	wpabuf_put_buf(nr, own_nr->nr);
+
+	wpabuf_put_u8(nr, WNM_NEIGHBOR_BSS_TRANSITION_CANDIDATE);
+	wpabuf_put_u8(nr, 1);
+	wpabuf_put_u8(nr, pref);
+
+	return nr;
+}
+#endif /* CONFIG_WFA */

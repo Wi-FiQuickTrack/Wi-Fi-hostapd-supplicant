@@ -931,14 +931,12 @@ static int hostapd_ctrl_iface_bss_tm_req(struct hostapd_data *hapd,
 		struct wpabuf *nr;
 		u8 pref = 100;
 
-		/* set preference to 0 for disassoc_imminent and BSS termination case
-		*/
+		/* set preference to 0 for disassoc_imminent and BSS termination case */
 		if (req_mode & WNM_BSS_TM_REQ_DISASSOC_IMMINENT || 
 			req_mode & WNM_BSS_TM_REQ_BSS_TERMINATION_INCLUDED) {
 			pref = 0;
 		}
-
-		nr = wnm_get_own_neighbor_report(hapd, pref);
+		nr = hostapd_neighbor_get_own_report_with_pref(hapd, pref);
 		if (!nr) {
 			wpa_printf(MSG_DEBUG,
 				   "No memory for allocating neighbor_report");
