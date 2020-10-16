@@ -20,6 +20,9 @@
 #include "ap/wpa_auth.h"
 #include "mbo_ap.h"
 #include "wnm_ap.h"
+#ifdef CONFIG_WFA
+#include "ap/neighbor_db.h"
+#endif /* CONFIG_WFA */
 
 #define MAX_TFS_IE_LEN  1024
 
@@ -393,8 +396,31 @@ static int ieee802_11_send_bss_trans_mgmt_request(struct hostapd_data *hapd,
 		   mgmt->u.action.u.bss_tm_req.validity_interval);
 
 	len = pos - &mgmt->u.action.category;
+#ifdef CONFIG_WFA
+	struct wpabuf *nr, *buf;
+	nr = hostapd_neighbor_get_own_report_with_pref(hapd, 100);
+	if (!nr)
+		return -1;
+
+	buf = wpabuf_alloc(len + 2 + wpabuf_len(nr));
+	if (!buf) {
+		wpabuf_free(nr);
+		return -1;
+	}
+	wpabuf_put_data(buf, &mgmt->u.action.category, len);
+	wpabuf_put_u8(buf, WLAN_EID_NEIGHBOR_REPORT);
+	wpabuf_put_u8(buf, wpabuf_len(nr));	
+	wpabuf_put_buf(buf, nr);	
+
+	res = hostapd_drv_send_action(hapd, hapd->iface->freq, 0,
+				      mgmt->da, wpabuf_head(buf), wpabuf_len(buf));
+
+	wpabuf_free(buf);
+	wpabuf_free(nr);
+#else
 	res = hostapd_drv_send_action(hapd, hapd->iface->freq, 0,
 				      mgmt->da, &mgmt->u.action.category, len);
+#endif
 	os_free(mgmt);
 	return res;
 }

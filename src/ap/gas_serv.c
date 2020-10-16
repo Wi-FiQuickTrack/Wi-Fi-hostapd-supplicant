@@ -19,7 +19,9 @@
 #include "dpp_hostapd.h"
 #include "sta_info.h"
 #include "gas_serv.h"
-
+#ifdef CONFIG_WFA
+#include "neighbor_db.h"
+#endif /* CONFIG_WFA */
 
 #ifdef CONFIG_DPP
 static void gas_serv_write_dpp_adv_proto(struct wpabuf *buf)
@@ -603,6 +605,23 @@ static void anqp_add_domain_name(struct hostapd_data *hapd, struct wpabuf *buf)
 	}
 }
 
+#ifdef CONFIG_WFA
+static void anqp_add_neighbor_report(struct hostapd_data *hapd, struct wpabuf *buf)
+{
+	struct wpabuf *nr;
+
+	nr = hostapd_neighbor_get_own_report_with_pref(hapd, 100);
+	if (!nr)
+		return;
+
+	wpa_printf(MSG_DEBUG, "ANQP:  add own bssid into neighbor report");
+	/* add own bssid into neighbor report */
+	wpabuf_put_le16(buf, ANQP_NEIGHBOR_REPORT);
+	wpabuf_put_le16(buf, wpabuf_len(nr));
+	wpabuf_put_buf(buf, nr);
+	wpabuf_free(nr);
+}
+#endif /* CONFIG_WFA */
 
 #ifdef CONFIG_FILS
 static void anqp_add_fils_realm_info(struct hostapd_data *hapd,
@@ -1028,6 +1047,10 @@ gas_serv_build_gas_resp_payload(struct hostapd_data *hapd,
 		anqp_add_elem(hapd, buf, ANQP_TDLS_CAPABILITY);
 	if (request & ANQP_REQ_EMERGENCY_NAI)
 		anqp_add_elem(hapd, buf, ANQP_EMERGENCY_NAI);
+#ifdef CONFIG_WFA
+	if (request & ANQP_REQ_NEIGHBOR_REPORT)
+		anqp_add_neighbor_report(hapd, buf);
+#endif /* CONFIG_WFA */
 
 	for (i = 0; i < num_extra_req; i++) {
 #ifdef CONFIG_FILS
@@ -1172,6 +1195,11 @@ static void rx_anqp_query_list_id(struct hostapd_data *hapd, u16 info_id,
 			     "Emergency NAI",
 			     get_anqp_elem(hapd, info_id) != NULL, qi);
 		break;
+#ifdef CONFIG_WFA		
+	case ANQP_NEIGHBOR_REPORT:
+		set_anqp_req(ANQP_REQ_NEIGHBOR_REPORT, "Neighbor Report", 1, qi);
+		break;
+#endif /* CONFIG_WFA */			
 	default:
 #ifdef CONFIG_FILS
 		if (info_id == ANQP_FILS_REALM_INFO &&

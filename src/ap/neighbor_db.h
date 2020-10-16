@@ -22,5 +22,8 @@ void hostapd_neighbor_set_own_report(struct hostapd_data *hapd);
 int hostapd_neighbor_remove(struct hostapd_data *hapd, const u8 *bssid,
 			    const struct wpa_ssid_value *ssid);
 void hostapd_free_neighbor_db(struct hostapd_data *hapd);
-
+#ifdef CONFIG_WFA
+struct wpabuf * hostapd_neighbor_get_own_report_with_pref(
+			 struct hostapd_data *hapd, u8 pref);
+#endif
 #endif /* NEIGHBOR_DB_H */
