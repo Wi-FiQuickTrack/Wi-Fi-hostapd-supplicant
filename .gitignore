@@ -6,7 +6,6 @@
 *.gcov
 *.pyc
 *~
-.config
 tests/hwsim/logs
 tests/remote/logs
 wpaspy/build
