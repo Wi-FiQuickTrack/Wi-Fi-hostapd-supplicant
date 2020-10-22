@@ -199,7 +199,7 @@ int hostapd_notif_assoc(struct hostapd_data *hapd, const u8 *addr,
 #ifdef CONFIG_TESTING_OPTIONS
 #ifdef CONFIG_IEEE80211AX
 	// hostapd doesn't get ASSOC REQ frame only get ASSOC event in NUC
-	if (elems.he_capabilities && !sta->he_capab) {
+	if (elems.he_capabilities) {
 		copy_sta_he_capab(hapd, sta, IEEE80211_MODE_AP,
 				  elems.he_capabilities,
 				  elems.he_capabilities_len);
