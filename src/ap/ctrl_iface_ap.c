@@ -363,6 +363,18 @@ static int hostapd_ctrl_iface_sta_mib(struct hostapd_data *hapd,
 			len += res;
 	}
 
+#ifdef CONFIG_TESTING_OPTIONS
+#ifdef CONFIG_IEEE80211AX
+	if ((sta->flags & WLAN_STA_HE) && sta->he_capab) {
+		res = os_snprintf(buf + len, buflen - len,
+				  "he_caps_chwidth=0x%02x\n",
+				  sta->he_capab->he_phy_capab_info[HE_PHYCAP_CHANNEL_WIDTH_SET_IDX] & HE_PHYCAP_CHANNEL_WIDTH_MASK);
+		if (!os_snprintf_error(buflen - len, res))
+			len += res;
+	}
+#endif
+#endif
+
 	if (sta->ext_capability &&
 	    buflen - len > (unsigned) (11 + 2 * sta->ext_capability[0])) {
 		len += os_snprintf(buf + len, buflen - len, "ext_capab=");

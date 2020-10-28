@@ -196,6 +196,17 @@ int hostapd_notif_assoc(struct hostapd_data *hapd, const u8 *addr,
 	}
 	sta->flags &= ~(WLAN_STA_WPS | WLAN_STA_MAYBE_WPS | WLAN_STA_WPS2);
 
+#ifdef CONFIG_TESTING_OPTIONS
+#ifdef CONFIG_IEEE80211AX
+	// hostapd doesn't get ASSOC REQ frame only get ASSOC event in NUC
+	if (elems.he_capabilities) {
+		copy_sta_he_capab(hapd, sta, IEEE80211_MODE_AP,
+				  elems.he_capabilities,
+				  elems.he_capabilities_len);
+	}
+#endif
+#endif
+
 	/*
 	 * ACL configurations to the drivers (implementing AP SME and ACL
 	 * offload) without hostapd's knowledge, can result in a disconnection
