@@ -730,6 +730,14 @@ int wnm_send_disassoc_imminent(struct hostapd_data *hapd,
 	return 0;
 }
 
+#ifdef CONFIG_WFA
+static void bss_termination_handler(void *eloop_ctx, void *timeout_ctx)
+{
+	struct hostapd_data *hapd = eloop_ctx;
+
+	hostapd_disable_iface(hapd->iface);
+}
+#endif /* CONFIG_WFA */
 
 static void set_disassoc_timer(struct hostapd_data *hapd, struct sta_info *sta,
 			       int disassoc_timer)
@@ -812,6 +820,9 @@ int wnm_send_ess_disassoc_imminent(struct hostapd_data *hapd,
 int wnm_send_bss_tm_req(struct hostapd_data *hapd, struct sta_info *sta,
 			u8 req_mode, int disassoc_timer, u8 valid_int,
 			const u8 *bss_term_dur, const char *url,
+#ifdef CONFIG_WFA
+			int bss_term_tsf_timer,
+#endif /* CONFIG_WFA */
 			const u8 *nei_rep, size_t nei_rep_len,
 			const u8 *mbo_attrs, size_t mbo_len)
 {
@@ -883,6 +894,16 @@ int wnm_send_bss_tm_req(struct hostapd_data *hapd, struct sta_info *sta,
 		set_disassoc_timer(hapd, sta, disassoc_timer);
 	}
 
+#ifdef CONFIG_WFA
+	if (bss_term_tsf_timer) {
+		wpa_printf(MSG_DEBUG,
+				"BSS termination timer set to %d secs", bss_term_tsf_timer);
+
+		eloop_cancel_timeout(bss_termination_handler, hapd, 0);
+		eloop_register_timeout(bss_term_tsf_timer,
+					0, bss_termination_handler, hapd, 0);
+	}
+#endif /* CONFIG_WFA */
 	return 0;
 }
 

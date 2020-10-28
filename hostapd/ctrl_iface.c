@@ -841,6 +841,10 @@ static int hostapd_ctrl_iface_bss_tm_req(struct hostapd_data *hapd,
 	struct sta_info *sta;
 	u8 req_mode = 0, valid_int = 0x01;
 	u8 bss_term_dur[12];
+#ifdef CONFIG_WFA
+	char bss_term_tsf[10];
+	int bss_term_tsf_timer = 0;
+#endif /* CONFIG_WFA */
 	char *url = NULL;
 	int ret;
 	u8 nei_rep[1000];
@@ -890,6 +894,10 @@ static int hostapd_ctrl_iface_bss_tm_req(struct hostapd_data *hapd,
 			wpa_printf(MSG_DEBUG, "Invalid bss_term data");
 			return -1;
 		}
+#ifdef CONFIG_WFA
+		os_memcpy(&bss_term_tsf[0], pos, end - pos);
+		bss_term_tsf_timer = atoi(bss_term_tsf);
+#endif /* CONFIG_WFA */
 		end++;
 		WPA_PUT_LE16(&bss_term_dur[10], atoi(end));
 	}
@@ -1012,6 +1020,9 @@ static int hostapd_ctrl_iface_bss_tm_req(struct hostapd_data *hapd,
 
 	ret = wnm_send_bss_tm_req(hapd, sta, req_mode, disassoc_timer,
 				  valid_int, bss_term_dur, url,
+#ifdef CONFIG_WFA
+				  bss_term_tsf_timer,
+#endif /* CONFIG_WFA */
 				  nei_len ? nei_rep : NULL, nei_len,
 				  mbo_len ? mbo : NULL, mbo_len);
 #ifdef CONFIG_MBO
