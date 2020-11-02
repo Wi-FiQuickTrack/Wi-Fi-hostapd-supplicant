@@ -2690,7 +2690,7 @@ static int wpa_supplicant_event_associnfo(struct wpa_supplicant *wpa_s,
 		wpa_hexdump(MSG_DEBUG, "resp_ies", data->assoc_info.resp_ies,
 			    data->assoc_info.resp_ies_len);
 
-#ifdef CONFIG_WFA
+#ifdef CONFIG_TESTING_OPTIONS
 		size_t hex_len = 2 * data->assoc_info.resp_ies_len + 1;
 		char *hex = os_malloc(hex_len);
 		if (hex) {
@@ -2699,7 +2699,7 @@ static int wpa_supplicant_event_associnfo(struct wpa_supplicant *wpa_s,
 			wpa_msg(wpa_s, MSG_INFO, "ASSOC_RESP_IE %s", hex);
 			os_free(hex);
 		}
-#endif
+#endif /* CONFIG_TESTING_OPTIONS */
 
 #ifdef CONFIG_TDLS
 		wpa_tdls_assoc_resp_ies(wpa_s->wpa, data->assoc_info.resp_ies,
@@ -4453,6 +4453,19 @@ static void wpas_event_assoc_reject(struct wpa_supplicant *wpa_s,
 	else
 		reject_bss = wpa_bss_get_bssid(wpa_s, bssid);
 #endif /* CONFIG_MBO */
+
+#ifdef CONFIG_TESTING_OPTIONS
+	if (data->assoc_reject.resp_ies) {
+		size_t hex_len = 2 * data->assoc_reject.resp_ies_len + 1;
+		char *hex = os_malloc(hex_len);
+		if (hex) {
+			wpa_snprintf_hex(hex, hex_len, data->assoc_reject.resp_ies,
+				 data->assoc_reject.resp_ies_len);
+			wpa_msg(wpa_s, MSG_INFO, "ASSOC_RESP_IE %s", hex);
+			os_free(hex);
+		}
+	}
+#endif /* CONFIG_TESTING_OPTIONS */
 
 	if (data->assoc_reject.bssid)
 		wpa_msg(wpa_s, MSG_INFO, WPA_EVENT_ASSOC_REJECT
