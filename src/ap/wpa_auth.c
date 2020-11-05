@@ -5608,4 +5608,16 @@ void wpa_auth_set_ocv_override_freq(struct wpa_authenticator *wpa_auth,
 	}
 }
 
+void wpa_auth_set_own_ie_override(struct wpa_authenticator *wpa_auth,
+				  struct wpabuf *own_ie_override)
+{
+	if (own_ie_override &&
+	    wpabuf_len(own_ie_override) <= MAX_OWN_IE_OVERRIDE) {
+		wpa_auth->conf.own_ie_override_len = wpabuf_len(own_ie_override);
+		os_memcpy(wpa_auth->conf.own_ie_override,
+			  wpabuf_head(own_ie_override),
+			  wpa_auth->conf.own_ie_override_len);
+	}
+}
+
 #endif /* CONFIG_TESTING_OPTIONS */
