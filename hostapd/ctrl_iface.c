@@ -1543,6 +1543,9 @@ static int hostapd_ctrl_iface_set(struct hostapd_data *hapd, char *cmd)
 			wpa_auth_set_ocv_override_freq(
 				hapd->wpa_auth,
 				WPA_AUTH_OCV_OVERRIDE_FILS_ASSOC, atoi(value));
+		else if (os_strcmp(cmd, "own_ie_override") == 0)
+			wpa_auth_set_own_ie_override(hapd->wpa_auth,
+						     hapd->conf->own_ie_override);
 #endif /* CONFIG_TESTING_OPTIONS */
 	}
 

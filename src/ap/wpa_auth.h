@@ -542,5 +542,7 @@ enum wpa_auth_ocv_override_frame {
 void wpa_auth_set_ocv_override_freq(struct wpa_authenticator *wpa_auth,
 				    enum wpa_auth_ocv_override_frame frame,
 				    unsigned int freq);
+void wpa_auth_set_own_ie_override(struct wpa_authenticator *wpa_auth,
+				  struct wpabuf *own_ie_override);
 
 #endif /* WPA_AUTH_H */
