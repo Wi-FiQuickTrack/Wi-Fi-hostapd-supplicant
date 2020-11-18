@@ -562,11 +562,7 @@ int hostapd_set_freq(struct hostapd_data *hapd, enum hostapd_hw_mode mode,
 				    cmode ? cmode->vht_capab : 0,
 				    cmode ?
 				    &cmode->he_capab[IEEE80211_MODE_AP] : NULL))
-#ifdef CONFIG_TESTING_OPTIONS
-		;
-#else
 		return -1;
-#endif
 
 	if (hapd->driver == NULL)
 		return 0;
