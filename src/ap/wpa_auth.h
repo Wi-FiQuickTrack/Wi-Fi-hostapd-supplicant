@@ -240,6 +240,7 @@ struct wpa_auth_config {
 	unsigned int gtk_rsc_override_set:1;
 	unsigned int igtk_rsc_override_set:1;
 	int ft_rsnxe_used;
+	bool send_immediate_m3;
 #endif /* CONFIG_TESTING_OPTIONS */
 	unsigned int oci_freq_override_eapol_m3;
 	unsigned int oci_freq_override_eapol_g1;
@@ -529,6 +530,7 @@ int wpa_auth_resend_m3(struct wpa_state_machine *sm,
 int wpa_auth_resend_group_m1(struct wpa_state_machine *sm,
 			     void (*cb)(void *ctx1, void *ctx2),
 			     void *ctx1, void *ctx2);
+void wpa_auth_set_immediate_m3(struct wpa_authenticator *wpa_auth, bool val);
 int wpa_auth_rekey_gtk(struct wpa_authenticator *wpa_auth);
 void wpa_auth_set_ptk_rekey_timer(struct wpa_state_machine *sm);
 void wpa_auth_set_ft_rsnxe_used(struct wpa_authenticator *wpa_auth, int val);

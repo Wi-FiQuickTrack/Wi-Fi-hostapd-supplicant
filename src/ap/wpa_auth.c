@@ -3560,6 +3560,22 @@ SM_STATE(WPA_PTK, PTKINITNEGOTIATING)
 	}
 #endif /* CONFIG_DPP2 */
 
+#ifdef CONFIG_TESTING_OPTIONS
+	if (conf->send_immediate_m3) {
+		int count;
+
+		wpa_printf(MSG_INFO, "Send 4 immediate M3 frames");
+		for (count = 0; count < 4; count++) {
+			wpa_send_eapol(sm->wpa_auth, sm,
+				(secure ? WPA_KEY_INFO_SECURE : 0) |
+				(wpa_mic_len(sm->wpa_key_mgmt, sm->pmk_len) ?
+				WPA_KEY_INFO_MIC : 0) |
+				WPA_KEY_INFO_ACK | WPA_KEY_INFO_INSTALL |
+				WPA_KEY_INFO_KEY_TYPE,
+				_rsc, sm->ANonce, kde, pos - kde, 0, encr);
+		}
+	} else
+#endif
 	wpa_send_eapol(sm->wpa_auth, sm,
 		       (secure ? WPA_KEY_INFO_SECURE : 0) |
 		       (wpa_mic_len(sm->wpa_key_mgmt, sm->pmk_len) ?
@@ -5567,6 +5583,12 @@ int wpa_auth_resend_group_m1(struct wpa_state_machine *sm,
 
 	os_free(kde_buf);
 	return 0;
+}
+
+
+void wpa_auth_set_immediate_m3(struct wpa_authenticator *wpa_auth, bool val)
+{
+	wpa_auth->conf.send_immediate_m3 = val;
 }
 
 

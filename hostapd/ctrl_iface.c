@@ -2467,6 +2467,21 @@ static int hostapd_ctrl_resend_m3(struct hostapd_data *hapd, const char *cmd)
 }
 
 
+static int hostapd_ctrl_set_immediate_m3(struct hostapd_data *hapd, const char *cmd)
+{
+	if (os_strstr(cmd, "start") != NULL) {
+		wpa_printf(MSG_INFO, "TESTING: Setting Immediate M3 flag to 1");
+		wpa_auth_set_immediate_m3(hapd->wpa_auth, true);
+	} else if (os_strstr(cmd, "stop") != NULL) {
+		wpa_printf(MSG_INFO, "TESTING: Setting Immediate M3 flag to 0");
+		wpa_auth_set_immediate_m3(hapd->wpa_auth, false);
+	} else
+		return -1;
+
+	return 0;
+}
+
+
 static int hostapd_ctrl_resend_group_m1(struct hostapd_data *hapd,
 					const char *cmd)
 {
@@ -3595,6 +3610,9 @@ static int hostapd_ctrl_iface_receive_process(struct hostapd_data *hapd,
 	} else if (os_strncmp(buf, "GET_PMK ", 8) == 0) {
 		reply_len = hostapd_ctrl_get_pmk(hapd, buf + 8, reply,
 						 reply_size);
+	} else if (os_strncmp(buf, "SET_IMMEDIATE_M3 ", 17) == 0) {
+		if (hostapd_ctrl_set_immediate_m3(hapd, buf + 17) < 0)
+			reply_len = -1;
 #endif /* CONFIG_TESTING_OPTIONS */
 	} else if (os_strncmp(buf, "CHAN_SWITCH ", 12) == 0) {
 		if (hostapd_ctrl_iface_chan_switch(hapd->iface, buf + 12))
