@@ -731,6 +731,22 @@ int wnm_send_disassoc_imminent(struct hostapd_data *hapd,
 }
 
 #ifdef CONFIG_WFA
+static void bss_termination_disassoc_handler(void *eloop_ctx, void *timeout_ctx)
+{
+	struct hostapd_data *hapd = eloop_ctx;
+	struct sta_info *sta;
+
+	sta = hapd->sta_list;
+
+	while (sta) {
+		wpa_printf(MSG_DEBUG, "BSS termination removing station " MACSTR,
+			   MAC2STR(sta->addr));
+		hostapd_drv_sta_disassoc(hapd, sta->addr, WLAN_REASON_UNSPECIFIED);
+		ap_sta_disassociate(hapd, sta, WLAN_REASON_UNSPECIFIED);
+		sta = sta->next;
+	}
+}
+
 static void bss_termination_handler(void *eloop_ctx, void *timeout_ctx)
 {
 	struct hostapd_data *hapd = eloop_ctx;
@@ -899,6 +915,12 @@ int wnm_send_bss_tm_req(struct hostapd_data *hapd, struct sta_info *sta,
 		wpa_printf(MSG_DEBUG,
 				"BSS termination timer set to %d secs", bss_term_tsf_timer);
 
+		/* trigger the STA disassociation 1 sec earlier before BSS termination */
+		if (bss_term_tsf_timer >= 1) {
+			eloop_cancel_timeout(bss_termination_disassoc_handler, hapd, 0);
+			eloop_register_timeout(bss_term_tsf_timer - 1,
+						0, bss_termination_disassoc_handler, hapd, 0);
+		}
 		eloop_cancel_timeout(bss_termination_handler, hapd, 0);
 		eloop_register_timeout(bss_term_tsf_timer,
 					0, bss_termination_handler, hapd, 0);
