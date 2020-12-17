@@ -145,6 +145,14 @@ static int hostapd_get_sta_tx_rx(struct hostapd_data *hapd,
 					       vht_supported_mcs_set.tx_map));
 		if (!os_snprintf_error(buflen - len, ret))
 			len += ret;
+#ifdef CONFIG_TESTING_OPTIONS
+		ret = os_snprintf(buf + len, buflen - len,
+				"vht_tx_highest=%04x\n",
+				le_to_host16(sta->vht_capabilities->
+					vht_supported_mcs_set.tx_highest));
+		if (!os_snprintf_error(buflen - len, ret))
+			len += ret;
+#endif
 	}
 
 	if ((sta->flags & WLAN_STA_HT) && sta->ht_capabilities) {
