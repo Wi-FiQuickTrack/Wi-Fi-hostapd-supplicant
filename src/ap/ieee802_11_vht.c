@@ -65,6 +65,13 @@ u8 * hostapd_eid_vht_capabilities(struct hostapd_data *hapd, u8 *eid, u32 nsts)
 	/* Supported MCS set comes from hw */
 	os_memcpy(&cap->vht_supported_mcs_set, mode->vht_mcs_set, 8);
 
+#ifdef CONFIG_TESTING_OPTIONS
+	/* Enable VHT Extened NSS BW Capable for 160M */
+	if (hapd->iconf->vht_oper_chwidth == CHANWIDTH_160MHZ) {
+		cap->vht_supported_mcs_set.tx_highest |= 0x2000;
+	}
+#endif
+
 	pos += sizeof(*cap);
 
 	return pos;

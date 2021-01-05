@@ -1518,7 +1518,11 @@ reply:
 remove_sta:
 	if (!sta_removed && sta->added_unassoc &&
 	    (resp != WLAN_STATUS_SUCCESS ||
-	     status_code != WLAN_STATUS_SUCCESS)) {
+#ifdef CONFIG_TESTING_OPTIONS
+	     (status_code != WLAN_STATUS_SUCCESS && status_code != WLAN_STATUS_SAE_HASH_TO_ELEMENT))) {
+#else
+	     status_code != WLAN_STATUS_SUCCESS)) {		
+#endif
 		hostapd_drv_sta_remove(hapd, sta->addr);
 		sta->added_unassoc = 0;
 	}
@@ -5039,7 +5043,11 @@ static void handle_auth_cb(struct hostapd_data *hapd,
 	}
 
 fail:
+#ifdef CONFIG_TESTING_OPTIONS 
+	if ((status_code != WLAN_STATUS_SUCCESS && status_code != WLAN_STATUS_SAE_HASH_TO_ELEMENT) && sta->added_unassoc) {
+#else
 	if (status_code != WLAN_STATUS_SUCCESS && sta->added_unassoc) {
+#endif
 		hostapd_drv_sta_remove(hapd, sta->addr);
 		sta->added_unassoc = 0;
 	}
