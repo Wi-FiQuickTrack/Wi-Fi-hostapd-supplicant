@@ -3227,7 +3227,7 @@ static int check_assoc_ies(struct hostapd_data *hapd, struct sta_info *sta,
 	}
 #endif /* CONFIG_IEEE80211AC */
 #ifdef CONFIG_IEEE80211AX
-#ifndef CONFIG_TESTING_OPTIONS
+#ifndef CONFIG_WFA
 	if (hapd->iconf->ieee80211ax) {
 #endif
 		resp = copy_sta_he_capab(hapd, sta, IEEE80211_MODE_AP,
@@ -3248,7 +3248,7 @@ static int check_assoc_ies(struct hostapd_data *hapd, struct sta_info *sta,
 			if (resp != WLAN_STATUS_SUCCESS)
 				return resp;
 		}
-#ifndef CONFIG_TESTING_OPTIONS
+#ifndef CONFIG_WFA
 	}
 #endif
 #endif /* CONFIG_IEEE80211AX */

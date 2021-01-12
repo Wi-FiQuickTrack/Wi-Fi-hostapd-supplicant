@@ -418,7 +418,7 @@ u16 copy_sta_he_capab(struct hostapd_data *hapd, struct sta_info *sta,
 		      enum ieee80211_op_mode opmode, const u8 *he_capab,
 		      size_t he_capab_len)
 {
-#ifdef CONFIG_TESTING_OPTIONS
+#ifdef CONFIG_WFA
 	if (!he_capab ||
 #else
 	if (!he_capab || !hapd->iconf->ieee80211ax ||
