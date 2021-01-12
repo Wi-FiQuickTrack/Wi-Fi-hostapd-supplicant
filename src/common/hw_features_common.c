@@ -476,7 +476,7 @@ int hostapd_set_freq_params(struct hostapd_freq_params *data,
 	}
 
 /* WFA: Skip he_cap/vht_cap check */
-#ifndef CONFIG_TESTING_OPTIONS
+#ifndef CONFIG_WFA
 	if (data->he_enabled) switch (oper_chwidth) {
 	case CHANWIDTH_USE_HT:
 		if (mode == HOSTAPD_MODE_IEEE80211G && sec_channel_offset) {
@@ -536,7 +536,7 @@ int hostapd_set_freq_params(struct hostapd_freq_params *data,
 		}
 		break;
 	}
-#endif
+#endif /* CONFIG_WFA */
 
 	if (data->he_enabled || data->vht_enabled) switch (oper_chwidth) {
 	case CHANWIDTH_USE_HT:
