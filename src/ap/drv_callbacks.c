@@ -1382,22 +1382,33 @@ static int hostapd_mgmt_rx(struct hostapd_data *hapd, struct rx_mgmt *rx_mgmt)
 	struct hostapd_frame_info fi;
 	int ret;
 
+	hdr = (const struct ieee80211_hdr *) rx_mgmt->frame;
 #ifdef CONFIG_TESTING_OPTIONS
 	if (hapd->ext_mgmt_frame_handling) {
-		size_t hex_len = 2 * rx_mgmt->frame_len + 1;
-		char *hex = os_malloc(hex_len);
+#ifdef CONFIG_WFA
+		u16 fc = le_to_host16(hdr->frame_control);
 
-		if (hex) {
-			wpa_snprintf_hex(hex, hex_len, rx_mgmt->frame,
-					 rx_mgmt->frame_len);
-			wpa_msg(hapd->msg_ctx, MSG_INFO, "MGMT-RX %s", hex);
-			os_free(hex);
+		if (WLAN_FC_GET_TYPE(fc) == WLAN_FC_TYPE_MGMT &&
+		    WLAN_FC_GET_STYPE(fc) == WLAN_FC_STYPE_BEACON) {
+			/* skip beacon */
+		} else {
+#endif /* CONFIG_WFA */
+			size_t hex_len = 2 * rx_mgmt->frame_len + 1;
+			char *hex = os_malloc(hex_len);
+
+			if (hex) {
+				wpa_snprintf_hex(hex, hex_len, rx_mgmt->frame,
+						rx_mgmt->frame_len);
+				wpa_msg(hapd->msg_ctx, MSG_INFO, "MGMT-RX %s", hex);
+				os_free(hex);
+			}
+#ifdef CONFIG_WFA
 		}
+#endif /* CONFIG_WFA */
 		return 1;
 	}
 #endif /* CONFIG_TESTING_OPTIONS */
 
-	hdr = (const struct ieee80211_hdr *) rx_mgmt->frame;
 	bssid = get_hdr_bssid(hdr, rx_mgmt->frame_len);
 	if (bssid == NULL)
 		return 0;
