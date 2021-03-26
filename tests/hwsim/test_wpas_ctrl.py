@@ -266,14 +266,14 @@ def test_wpas_ctrl_network(dev):
              "f2:99:88:77:66:55 02:11:22:33:44:55/ff:00:ff:00:ff:00 12:34:56:78:90:ab",
              "02:11:22:33:44:55/ff:ff:ff:00:00:00 02:ae:be:ce:53:77/00:00:00:00:00:ff"]
     for val in tests:
-        dev[0].set_network(id, "bssid_blacklist", val)
-        res = dev[0].get_network(id, "bssid_blacklist")
+        dev[0].set_network(id, "bssid_ignore", val)
+        res = dev[0].get_network(id, "bssid_ignore")
         if res != val:
-            raise Exception("Unexpected bssid_blacklist value: %s != %s" % (res, val))
-        dev[0].set_network(id, "bssid_whitelist", val)
-        res = dev[0].get_network(id, "bssid_whitelist")
+            raise Exception("Unexpected bssid_ignore value: %s != %s" % (res, val))
+        dev[0].set_network(id, "bssid_accept", val)
+        res = dev[0].get_network(id, "bssid_accept")
         if res != val:
-            raise Exception("Unexpected bssid_whitelist value: %s != %s" % (res, val))
+            raise Exception("Unexpected bssid_accept value: %s != %s" % (res, val))
 
     tests = ["foo",
              "00:11:22:33:44:5",
@@ -281,8 +281,8 @@ def test_wpas_ctrl_network(dev):
              "00:11:22:33:44:55/",
              "00:11:22:33:44:55/66:77:88:99:aa:b"]
     for val in tests:
-        if "FAIL" not in dev[0].request("SET_NETWORK %d bssid_blacklist %s" % (id, val)):
-            raise Exception("Invalid bssid_blacklist value accepted")
+        if "FAIL" not in dev[0].request("SET_NETWORK %d bssid_ignore %s" % (id, val)):
+            raise Exception("Invalid bssid_ignore value accepted")
 
 @remote_compatible
 def test_wpas_ctrl_network_oom(dev):
@@ -687,8 +687,8 @@ def test_wpas_ctrl_addr(dev):
         raise Exception("Unexpected success on invalid WPS_REG")
     if "FAIL" not in dev[0].request("IBSS_RSN 00:11:22:33:44"):
         raise Exception("Unexpected success on invalid IBSS_RSN")
-    if "FAIL" not in dev[0].request("BLACKLIST 00:11:22:33:44"):
-        raise Exception("Unexpected success on invalid BLACKLIST")
+    if "FAIL" not in dev[0].request("BSSID_IGNORE 00:11:22:33:44"):
+        raise Exception("Unexpected success on invalid BSSID_IGNORE")
 
 @remote_compatible
 def test_wpas_ctrl_wps_errors(dev):
@@ -1078,43 +1078,43 @@ def test_wpas_ctrl_nfc_get_handover(dev):
         if "FAIL" in dev[0].request("NFC_GET_HANDOVER_SEL " + v):
             raise Exception("Unexpected NFC_GET_HANDOVER_SEL failure for " + v)
 
-def get_blacklist(dev):
-    return dev.request("BLACKLIST").splitlines()
+def get_bssid_ignore_list(dev):
+    return dev.request("BSSID_IGNORE").splitlines()
 
 @remote_compatible
-def test_wpas_ctrl_blacklist(dev):
-    """wpa_supplicant ctrl_iface BLACKLIST"""
-    if "OK" not in dev[0].request("BLACKLIST clear"):
-        raise Exception("BLACKLIST clear failed")
-    b = get_blacklist(dev[0])
+def test_wpas_ctrl_bssid_ignore(dev):
+    """wpa_supplicant ctrl_iface BSSID_IGNORE"""
+    if "OK" not in dev[0].request("BSSID_IGNORE clear"):
+        raise Exception("BSSID_IGNORE clear failed")
+    b = get_bssid_ignore_list(dev[0])
     if len(b) != 0:
-        raise Exception("Unexpected blacklist contents: " + str(b))
-    if "OK" not in dev[0].request("BLACKLIST 00:11:22:33:44:55"):
-        raise Exception("BLACKLIST add failed")
-    b = get_blacklist(dev[0])
+        raise Exception("Unexpected BSSID ignore list contents: " + str(b))
+    if "OK" not in dev[0].request("BSSID_IGNORE 00:11:22:33:44:55"):
+        raise Exception("BSSID_IGNORE add failed")
+    b = get_bssid_ignore_list(dev[0])
     if "00:11:22:33:44:55" not in b:
-        raise Exception("Unexpected blacklist contents: " + str(b))
-    if "OK" not in dev[0].request("BLACKLIST 00:11:22:33:44:56"):
-        raise Exception("BLACKLIST add failed")
-    b = get_blacklist(dev[0])
+        raise Exception("Unexpected BSSID ignore list contents: " + str(b))
+    if "OK" not in dev[0].request("BSSID_IGNORE 00:11:22:33:44:56"):
+        raise Exception("BSSID_IGNORE add failed")
+    b = get_bssid_ignore_list(dev[0])
     if "00:11:22:33:44:55" not in b or "00:11:22:33:44:56" not in b:
-        raise Exception("Unexpected blacklist contents: " + str(b))
-    if "OK" not in dev[0].request("BLACKLIST 00:11:22:33:44:56"):
-        raise Exception("BLACKLIST add failed")
-    b = get_blacklist(dev[0])
+        raise Exception("Unexpected BSSID ignore list contents: " + str(b))
+    if "OK" not in dev[0].request("BSSID_IGNORE 00:11:22:33:44:56"):
+        raise Exception("BSSID_IGNORE add failed")
+    b = get_bssid_ignore_list(dev[0])
     if "00:11:22:33:44:55" not in b or "00:11:22:33:44:56" not in b or len(b) != 2:
-        raise Exception("Unexpected blacklist contents: " + str(b))
+        raise Exception("Unexpected BSSID ignore list contents: " + str(b))
 
-    if "OK" not in dev[0].request("BLACKLIST clear"):
-        raise Exception("BLACKLIST clear failed")
-    if dev[0].request("BLACKLIST") != "":
-        raise Exception("Unexpected blacklist contents")
+    if "OK" not in dev[0].request("BSSID_IGNORE clear"):
+        raise Exception("BSSID_IGNORE clear failed")
+    if dev[0].request("BSSID_IGNORE") != "":
+        raise Exception("Unexpected BSSID ignore list contents")
 
 @remote_compatible
-def test_wpas_ctrl_blacklist_oom(dev):
-    """wpa_supplicant ctrl_iface BLACKLIST and out-of-memory"""
-    with alloc_fail(dev[0], 1, "wpa_blacklist_add"):
-        if "FAIL" not in dev[0].request("BLACKLIST aa:bb:cc:dd:ee:ff"):
+def test_wpas_ctrl_bssid_ignore_oom(dev):
+    """wpa_supplicant ctrl_iface BSSID_IGNORE and out-of-memory"""
+    with alloc_fail(dev[0], 1, "wpa_bssid_ignore_add"):
+        if "FAIL" not in dev[0].request("BSSID_IGNORE aa:bb:cc:dd:ee:ff"):
             raise Exception("Unexpected success with allocation failure")
 
 def test_wpas_ctrl_log_level(dev):
@@ -1343,6 +1343,32 @@ def test_wpas_ctrl_rsp(dev, apdev):
             raise Exception("Request failed unexpectedly")
         if "OK" not in dev[0].request("CTRL-RSP-%s-%d:" % (req, id)):
             raise Exception("Request failed unexpectedly")
+
+def test_wpas_ctrl_vendor_test(dev, apdev):
+    """wpas_supplicant and VENDOR test command"""
+    OUI_QCA = 0x001374
+    QCA_NL80211_VENDOR_SUBCMD_TEST = 1
+    QCA_WLAN_VENDOR_ATTR_TEST = 8
+    attr = struct.pack("@HHI", 4 + 4, QCA_WLAN_VENDOR_ATTR_TEST, 123)
+    cmd = "VENDOR %x %d %s" % (OUI_QCA, QCA_NL80211_VENDOR_SUBCMD_TEST, binascii.hexlify(attr).decode())
+
+    res = dev[0].request(cmd)
+    if "FAIL" in res:
+        raise Exception("VENDOR command failed")
+    val, = struct.unpack("@I", binascii.unhexlify(res))
+    if val != 125:
+        raise Exception("Incorrect response value")
+
+    res = dev[0].request(cmd + " nested=1")
+    if "FAIL" in res:
+        raise Exception("VENDOR command failed")
+    val, = struct.unpack("@I", binascii.unhexlify(res))
+    if val != 125:
+        raise Exception("Incorrect response value")
+
+    res = dev[0].request(cmd + " nested=0")
+    if "FAIL" not in res:
+        raise Exception("VENDOR command with invalid (not nested) data accepted")
 
 @remote_compatible
 def test_wpas_ctrl_vendor(dev, apdev):

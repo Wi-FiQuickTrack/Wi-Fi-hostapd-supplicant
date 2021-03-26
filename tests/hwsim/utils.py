@@ -114,8 +114,24 @@ def check_sae_capab(dev):
         raise HwsimSkip("SAE not supported")
 
 def check_sae_pk_capab(dev):
-    if "PK" not in dev.get_capability("sae"):
+    capab = dev.get_capability("sae")
+    if capab is None or "PK" not in capab:
         raise HwsimSkip("SAE-PK not supported")
+
+def check_erp_capa(dev):
+    capab = dev.get_capability("erp")
+    if not capab or 'ERP' not in capab:
+        raise HwsimSkip("ERP not supported in the build")
+
+def check_fils_capa(dev):
+    capa = dev.get_capability("fils")
+    if capa is None or "FILS" not in capa:
+        raise HwsimSkip("FILS not supported")
+
+def check_fils_sk_pfs_capa(dev):
+    capa = dev.get_capability("fils")
+    if capa is None or "FILS-SK-PFS" not in capa:
+        raise HwsimSkip("FILS-SK-PFS not supported")
 
 def check_tls_tod(dev):
     tls = dev.request("GET tls_library")

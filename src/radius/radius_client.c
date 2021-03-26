@@ -7,6 +7,7 @@
  */
 
 #include "includes.h"
+#include <net/if.h>
 
 #include "common.h"
 #include "radius.h"
@@ -816,7 +817,9 @@ static void radius_client_receive(int sock, void *eloop_ctx, void *sock_ctx)
 	struct hostapd_radius_servers *conf = radius->conf;
 	RadiusType msg_type = (RadiusType) sock_ctx;
 	int len, roundtrip;
-	unsigned char buf[3000];
+	unsigned char buf[RADIUS_MAX_MSG_LEN];
+	struct msghdr msghdr = {0};
+	struct iovec iov;
 	struct radius_msg *msg;
 	struct radius_hdr *hdr;
 	struct radius_rx_handler *handlers;
@@ -836,15 +839,22 @@ static void radius_client_receive(int sock, void *eloop_ctx, void *sock_ctx)
 		rconf = conf->auth_server;
 	}
 
-	len = recv(sock, buf, sizeof(buf), MSG_DONTWAIT);
+	iov.iov_base = buf;
+	iov.iov_len = RADIUS_MAX_MSG_LEN;
+	msghdr.msg_iov = &iov;
+	msghdr.msg_iovlen = 1;
+	msghdr.msg_flags = 0;
+	len = recvmsg(sock, &msghdr, MSG_DONTWAIT);
 	if (len < 0) {
-		wpa_printf(MSG_INFO, "recv[RADIUS]: %s", strerror(errno));
+		wpa_printf(MSG_INFO, "recvmsg[RADIUS]: %s", strerror(errno));
 		return;
 	}
+
 	hostapd_logger(radius->ctx, NULL, HOSTAPD_MODULE_RADIUS,
 		       HOSTAPD_LEVEL_DEBUG, "Received %d bytes from RADIUS "
 		       "server", len);
-	if (len == sizeof(buf)) {
+
+	if (msghdr.msg_flags & MSG_TRUNC) {
 		wpa_printf(MSG_INFO, "RADIUS: Possibly too long UDP frame for our buffer - dropping it");
 		return;
 	}
@@ -1159,6 +1169,29 @@ radius_change_server(struct radius_client_data *radius,
 		return -1;
 	}
 
+	/* Force a reconnect by disconnecting the socket first */
+	if (connect(sel_sock, (struct sockaddr *) &disconnect_addr,
+		    sizeof(disconnect_addr)) < 0)
+		wpa_printf(MSG_INFO, "disconnect[radius]: %s", strerror(errno));
+
+#ifdef __linux__
+	if (conf->force_client_dev && conf->force_client_dev[0]) {
+		if (setsockopt(sel_sock, SOL_SOCKET, SO_BINDTODEVICE,
+			       conf->force_client_dev,
+			       os_strlen(conf->force_client_dev)) < 0) {
+			wpa_printf(MSG_ERROR,
+				   "RADIUS: setsockopt[SO_BINDTODEVICE]: %s",
+				   strerror(errno));
+			/* Probably not a critical error; continue on and hope
+			 * for the best. */
+		} else {
+			wpa_printf(MSG_DEBUG,
+				   "RADIUS: Bound client socket to device: %s",
+				   conf->force_client_dev);
+		}
+	}
+#endif /* __linux__ */
+
 	if (conf->force_client_addr) {
 		switch (conf->client_addr.af) {
 		case AF_INET:
@@ -1190,11 +1223,6 @@ radius_change_server(struct radius_client_data *radius,
 			return -1;
 		}
 	}
-
-	/* Force a reconnect by disconnecting the socket first */
-	if (connect(sel_sock, (struct sockaddr *) &disconnect_addr,
-		    sizeof(disconnect_addr)) < 0)
-		wpa_printf(MSG_INFO, "disconnect[radius]: %s", strerror(errno));
 
 	if (connect(sel_sock, addr, addrlen) < 0) {
 		wpa_printf(MSG_INFO, "connect[radius]: %s", strerror(errno));

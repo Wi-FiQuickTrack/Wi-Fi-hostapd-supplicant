@@ -2240,7 +2240,7 @@ def test_sigma_dut_ap_dpp_qr_enrollee_chirp(dev, apdev, params):
             dev[1].dpp_listen(2437)
             dev[0].dpp_auth_init(uri=uri, conf="sta-dpp", ssid="DPPNET01",
                                  configurator=conf_id)
-            dev[1].wait_connected()
+            dev[1].wait_connected(timeout=20)
 
             sigma_dut_cmd_check("ap_reset_default,program,DPP")
         finally:
@@ -2334,7 +2334,7 @@ def run_sigma_dut_ap_dpp_qr(dev, apdev, params, ap_conf, sta_conf, extra=""):
             cmd = "DPP_AUTH_INIT peer=%d conf=%s %s configurator=%d" % (id0b, sta_conf, extra, conf_id)
             if "OK" not in dev[0].request(cmd):
                 raise Exception("Failed to initiate DPP Authentication")
-            dev[1].wait_connected()
+            dev[1].wait_connected(timeout=20)
 
             sigma_dut_cmd_check("ap_reset_default")
         finally:
@@ -2389,7 +2389,7 @@ def test_sigma_dut_ap_dpp_offchannel(dev, apdev, params):
             cmd = "DPP_AUTH_INIT peer=%d conf=sta-dpp ssid=%s configurator=%d" % (id0b, to_hex("DPPNET01"), conf_id)
             if "OK" not in dev[0].request(cmd):
                 raise Exception("Failed to initiate DPP Authentication")
-            dev[1].wait_connected()
+            dev[1].wait_connected(timeout=20)
 
             sigma_dut_cmd_check("ap_reset_default")
         finally:
@@ -2914,7 +2914,7 @@ def run_sigma_dut_ap_dpp_self_config(dev, apdev):
     res = sigma_dut_cmd(cmd)
     if "BootstrapResult,OK,AuthResult,OK,ConfResult,OK" not in res:
         raise Exception("Unexpected result: " + res)
-    dev[0].wait_connected()
+    dev[0].wait_connected(timeout=20)
     dev[0].request("DISCONNECT")
     dev[0].wait_disconnected()
     sigma_dut_cmd_check("ap_reset_default")
@@ -3114,6 +3114,7 @@ def run_sigma_dut_ap_dpp_tcp_enrollee_init(dev, apdev):
     res = sigma_dut_cmd(cmd, timeout=10)
     if "BootstrapResult,OK,AuthResult,OK,ConfResult,OK" not in res:
         raise Exception("Unexpected result: " + res)
+    sigma_dut_cmd_check("ap_reset_default")
 
 def test_sigma_dut_dpp_tcp_enrollee_init_mutual(dev, apdev):
     """sigma_dut DPP TCP Enrollee as initiator with mutual authentication"""
@@ -3391,7 +3392,7 @@ def test_sigma_dut_dpp_reconfig_enrollee(dev, apdev):
         if ev is None:
             raise Exception("DPP Config Response (reconfig) not transmitted")
 
-        dev[0].wait_connected()
+        dev[0].wait_connected(timeout=20)
         ev = dev[1].wait_event(["DPP-CONN-STATUS-RESULT"], timeout=20)
         if ev is None:
             raise Exception("No connection status reported")
@@ -3413,7 +3414,7 @@ def test_sigma_dut_dpp_reconfig_enrollee(dev, apdev):
         if ev is None:
             raise Exception("DPP Config Response (reconfig) not transmitted [2]")
 
-        dev[0].wait_connected()
+        dev[0].wait_connected(timeout=20)
     finally:
         dev[0].set("dpp_config_processing", "0")
         stop_sigma_dut(sigma)
@@ -4661,6 +4662,7 @@ def test_sigma_dut_ap_beacon_prot(dev, apdev, params):
 
 def test_sigma_dut_ap_transition_disable(dev, apdev, params):
     """sigma_dut controlled AP and transition disabled indication"""
+    check_sae_capab(dev[0])
     logdir = params['prefix'] + ".sigma-hostapd"
 
     with HWSimRadio() as (radio, iface):
@@ -4686,6 +4688,7 @@ def test_sigma_dut_ap_transition_disable(dev, apdev, params):
 
 def test_sigma_dut_ap_transition_disable_change(dev, apdev, params):
     """sigma_dut controlled AP and transition disabled indication change"""
+    check_sae_capab(dev[0])
     logdir = params['prefix'] + ".sigma-hostapd"
 
     with HWSimRadio() as (radio, iface):
@@ -5214,11 +5217,12 @@ def test_sigma_dut_client_privacy(dev, apdev, params):
         sigma_dut_cmd_check("sta_reset_default,interface," + ifname)
     finally:
         stop_sigma_dut(sigma)
-        dev[1].set("mac_addr", "0", allow_fail=True)
-        dev[1].set("rand_addr_lifetime", "60", allow_fail=True)
-        dev[1].set("preassoc_mac_addr", "0", allow_fail=True)
-        dev[1].set("gas_rand_mac_addr", "0", allow_fail=True)
-        dev[1].set("gas_rand_addr_lifetime", "60", allow_fail=True)
+        dev[0].set("mac_addr", "0", allow_fail=True)
+        dev[0].set("rand_addr_lifetime", "60", allow_fail=True)
+        dev[0].request("MAC_RAND_SCAN enable=0 all")
+        dev[0].set("preassoc_mac_addr", "0", allow_fail=True)
+        dev[0].set("gas_rand_mac_addr", "0", allow_fail=True)
+        dev[0].set("gas_rand_addr_lifetime", "60", allow_fail=True)
 
     out = run_tshark(os.path.join(logdir, "hwsim0.pcapng"),
                      "wlan.addr == " + addr,

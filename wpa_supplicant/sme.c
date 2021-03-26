@@ -300,7 +300,7 @@ static void sme_auth_handle_rrm(struct wpa_supplicant *wpa_s,
 	*pos++ = WLAN_EID_RRM_ENABLED_CAPABILITIES;
 	*pos++ = rrm_ie_len;
 
-	/* Set supported capabilites flags */
+	/* Set supported capabilities flags */
 	if (wpa_s->drv_rrm_flags & WPA_DRIVER_FLAGS_TX_POWER_INSERTION)
 		*pos |= WLAN_RRM_CAPS_LINK_MEASUREMENT;
 
@@ -941,6 +941,8 @@ static void sme_auth_start_cb(struct wpa_radio_work *work, int deinit)
 	struct wpa_connect_work *cwork = work->ctx;
 	struct wpa_supplicant *wpa_s = work->wpa_s;
 
+	wpa_s->roam_in_progress = false;
+
 	if (deinit) {
 		if (work->started)
 			wpa_s->connect_work = NULL;
@@ -981,6 +983,11 @@ void sme_authenticate(struct wpa_supplicant *wpa_s,
 		return;
 	}
 
+	if (wpa_s->roam_in_progress) {
+		wpa_dbg(wpa_s, MSG_DEBUG,
+			"SME: Reject sme_authenticate() in favor of explicit roam request");
+		return;
+	}
 	if (radio_work_pending(wpa_s, "sme-connect")) {
 		/*
 		 * The previous sme-connect work might no longer be valid due to
@@ -1891,12 +1898,10 @@ pfs_fail:
 #endif /* CONFIG_DPP2 */
 
 	wpa_s->mscs_setup_done = false;
-	if (wpa_s->current_bss && wpa_s->robust_av.valid_config) {
+	if (wpa_bss_ext_capab(wpa_s->current_bss, WLAN_EXT_CAPAB_MSCS) &&
+	    wpa_s->robust_av.valid_config) {
 		struct wpabuf *mscs_ie;
 		size_t mscs_ie_len, buf_len, *wpa_ie_len, max_ie_len;
-
-		if (!wpa_bss_ext_capab(wpa_s->current_bss, WLAN_EXT_CAPAB_MSCS))
-			goto mscs_fail;
 
 		buf_len = 3 +	/* MSCS descriptor IE header */
 			  1 +	/* Request type */
@@ -1915,8 +1920,7 @@ pfs_fail:
 		max_ie_len = sizeof(wpa_s->sme.assoc_req_ie);
 		wpas_populate_mscs_descriptor_ie(&wpa_s->robust_av, mscs_ie);
 		if ((*wpa_ie_len + wpabuf_len(mscs_ie)) <= max_ie_len) {
-			wpa_hexdump_buf(MSG_MSGDUMP, "MSCS IE",
-					wpabuf_head(mscs_ie));
+			wpa_hexdump_buf(MSG_MSGDUMP, "MSCS IE", mscs_ie);
 			mscs_ie_len = wpabuf_len(mscs_ie);
 			os_memcpy(wpa_s->sme.assoc_req_ie + *wpa_ie_len,
 				  wpabuf_head(mscs_ie), mscs_ie_len);
@@ -2473,7 +2477,7 @@ static void wpa_obss_scan_freqs_list(struct wpa_supplicant *wpa_s,
 	int start, end;
 
 	mode = get_mode(wpa_s->hw.modes, wpa_s->hw.num_modes,
-			HOSTAPD_MODE_IEEE80211G, 0);
+			HOSTAPD_MODE_IEEE80211G, false);
 	if (mode == NULL) {
 		/* No channels supported in this band - use empty list */
 		params->freqs = os_zalloc(sizeof(int));
@@ -2899,11 +2903,17 @@ static void sme_process_sa_query_response(struct wpa_supplicant *wpa_s,
 }
 
 
-void sme_sa_query_rx(struct wpa_supplicant *wpa_s, const u8 *sa,
+void sme_sa_query_rx(struct wpa_supplicant *wpa_s, const u8 *da, const u8 *sa,
 		     const u8 *data, size_t len)
 {
 	if (len < 1 + WLAN_SA_QUERY_TR_ID_LEN)
 		return;
+	if (is_multicast_ether_addr(da)) {
+		wpa_printf(MSG_DEBUG,
+			   "IEEE 802.11: Ignore group-addressed SA Query frame (A1=" MACSTR " A2=" MACSTR ")",
+			   MAC2STR(da), MAC2STR(sa));
+		return;
+	}
 
 	wpa_dbg(wpa_s, MSG_DEBUG, "SME: Received SA Query frame from "
 		MACSTR " (trans_id %02x%02x)", MAC2STR(sa), data[1], data[2]);
@@ -2929,7 +2939,7 @@ void sme_sa_query_rx(struct wpa_supplicant *wpa_s, const u8 *sa,
 
 		if (ocv_verify_tx_params(elems.oci, elems.oci_len, &ci,
 					 channel_width_to_int(ci.chanwidth),
-					 ci.seg1_idx) != 0) {
+					 ci.seg1_idx) != OCI_SUCCESS) {
 			wpa_msg(wpa_s, MSG_INFO, OCV_FAILURE "addr=" MACSTR
 				" frame=saquery%s error=%s",
 				MAC2STR(sa), data[0] == WLAN_SA_QUERY_REQUEST ?

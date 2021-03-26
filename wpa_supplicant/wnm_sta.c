@@ -383,7 +383,7 @@ static void ieee802_11_rx_wnmsleep_resp(struct wpa_supplicant *wpa_s,
 
 		if (ocv_verify_tx_params(oci_ie, oci_ie_len, &ci,
 					 channel_width_to_int(ci.chanwidth),
-					 ci.seg1_idx) != 0) {
+					 ci.seg1_idx) != OCI_SUCCESS) {
 			wpa_msg(wpa_s, MSG_WARNING, "WNM: OCV failed: %s",
 				ocv_errorstr);
 			return;
@@ -552,7 +552,7 @@ static int wnm_nei_get_chan(struct wpa_supplicant *wpa_s, u8 op_class, u8 chan)
 			freq = 2407 + chan * 5;
 		else if (chan == 14)
 			freq = 2484;
-		else if (chan >= 36 && chan <= 169)
+		else if (chan >= 36 && chan <= 177)
 			freq = 5000 + chan * 5;
 	}
 	return freq;

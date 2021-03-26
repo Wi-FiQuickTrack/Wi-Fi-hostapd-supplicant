@@ -99,14 +99,45 @@ static void rx_data_eth(struct wlantest *wt, const u8 *bssid,
 }
 
 
-static void rx_data_process(struct wlantest *wt, const u8 *bssid,
+static void rx_data_process(struct wlantest *wt, struct wlantest_bss *bss,
+			    const u8 *bssid,
 			    const u8 *sta_addr,
 			    const u8 *dst, const u8 *src,
 			    const u8 *data, size_t len, int prot,
-			    const u8 *peer_addr)
+			    const u8 *peer_addr, const u8 *qos)
 {
 	if (len == 0)
 		return;
+
+	if (bss && bss->mesh && qos && !(qos[0] & BIT(7)) &&
+	    (qos[1] & BIT(0))) {
+		u8 addr_ext_mode;
+		size_t mesh_control_len = 6;
+
+		/* Skip Mesh Control field if this is not an A-MSDU */
+		if (len < mesh_control_len) {
+			wpa_printf(MSG_DEBUG,
+				   "Not enough room for Mesh Control field");
+			return;
+		}
+
+		addr_ext_mode = data[0] & 0x03;
+		if (addr_ext_mode == 3) {
+			wpa_printf(MSG_DEBUG,
+				   "Reserved Mesh Control :: Address Extension Mode");
+			return;
+		}
+
+		mesh_control_len += addr_ext_mode * ETH_ALEN;
+		if (len < mesh_control_len) {
+			wpa_printf(MSG_DEBUG,
+				   "Not enough room for Mesh Address Extension");
+			return;
+		}
+
+		len -= mesh_control_len;
+		data += mesh_control_len;
+	}
 
 	if (len >= 8 && os_memcmp(data, "\xaa\xaa\x03\x00\x00\x00", 6) == 0) {
 		rx_data_eth(wt, bssid, sta_addr, dst, src,
@@ -116,19 +147,6 @@ static void rx_data_process(struct wlantest *wt, const u8 *bssid,
 	}
 
 	wpa_hexdump(MSG_DEBUG, "Unrecognized LLC", data, len > 8 ? 8 : len);
-}
-
-
-static void write_decrypted_note(struct wlantest *wt, const u8 *decrypted,
-				 const u8 *tk, size_t tk_len, int keyid)
-{
-	char tk_hex[65];
-
-	if (!decrypted)
-		return;
-
-	wpa_snprintf_hex(tk_hex, sizeof(tk_hex), tk, tk_len);
-	add_note(wt, MSG_EXCESSIVE, "TK[%d] %s", keyid, tk_hex);
 }
 
 
@@ -263,8 +281,13 @@ static void rx_data_bss_prot_group(struct wlantest *wt,
 	if (bss->gtk_len[keyid] == 0 &&
 	    (bss->group_cipher != WPA_CIPHER_WEP40 ||
 	     dl_list_empty(&wt->wep))) {
-		add_note(wt, MSG_MSGDUMP, "No GTK known to decrypt the frame "
-			 "(A2=" MACSTR " KeyID=%d)",
+		decrypted = try_all_ptk(wt, bss->group_cipher, hdr, keyid,
+					data, len, &dlen);
+		if (decrypted)
+			goto process;
+		add_note(wt, MSG_MSGDUMP,
+			 "No GTK known to decrypt the frame (A2=" MACSTR
+			 " KeyID=%d)",
 			 MAC2STR(hdr->addr2), keyid);
 		return;
 	}
@@ -317,8 +340,9 @@ skip_replay_det:
 		wpa_snprintf_hex(gtk, sizeof(gtk), bss->gtk[keyid],
 				 bss->gtk_len[keyid]);
 		add_note(wt, MSG_EXCESSIVE, "GTK[%d] %s", keyid, gtk);
-		rx_data_process(wt, bss->bssid, NULL, dst, src, decrypted,
-				dlen, 1, NULL);
+	process:
+		rx_data_process(wt, bss, bss->bssid, NULL, dst, src, decrypted,
+				dlen, 1, NULL, qos);
 		if (!replay)
 			os_memcpy(bss->rsc[keyid], pn, 6);
 		write_pcap_decrypted(wt, (const u8 *) hdr, hdrlen,
@@ -629,8 +653,8 @@ check_zero_tk:
 			peer_addr = hdr->addr1;
 		if (!replay && rsc)
 			os_memcpy(rsc, pn, 6);
-		rx_data_process(wt, bss->bssid, sta->addr, dst, src, decrypted,
-				dlen, 1, peer_addr);
+		rx_data_process(wt, bss, bss->bssid, sta->addr, dst, src,
+				decrypted, dlen, 1, peer_addr, qos);
 		write_pcap_decrypted(wt, (const u8 *) hdr, hdrlen,
 				     decrypted, dlen);
 	} else if (sta->tptk_set) {
@@ -733,8 +757,8 @@ static void rx_data_bss(struct wlantest *wt, const struct ieee80211_hdr *hdr,
 			}
 		}
 
-		rx_data_process(wt, bssid, sta_addr, dst, src, data, len, 0,
-				peer_addr);
+		rx_data_process(wt, bss, bssid, sta_addr, dst, src, data, len,
+				0, peer_addr, qos);
 	}
 }
 

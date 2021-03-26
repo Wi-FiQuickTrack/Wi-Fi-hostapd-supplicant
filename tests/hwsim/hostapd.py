@@ -419,6 +419,12 @@ class Hostapd:
             raise Exception("Failed to parse QR Code URI")
         return int(res)
 
+    def dpp_nfc_uri(self, uri):
+        res = self.request("DPP_NFC_URI " + uri)
+        if "FAIL" in res:
+            raise Exception("Failed to parse NFC URI")
+        return int(res)
+
     def dpp_bootstrap_gen(self, type="qrcode", chan=None, mac=None, info=None,
                           curve=None, key=None):
         cmd = "DPP_BOOTSTRAP_GEN type=" + type
@@ -439,6 +445,20 @@ class Hostapd:
             raise Exception("Failed to generate bootstrapping info")
         return int(res)
 
+    def dpp_bootstrap_set(self, id, conf=None, configurator=None, ssid=None,
+                          extra=None):
+        cmd = "DPP_BOOTSTRAP_SET %d" % id
+        if ssid:
+            cmd += " ssid=" + binascii.hexlify(ssid.encode()).decode()
+        if extra:
+            cmd += " " + extra
+        if conf:
+            cmd += " conf=" + conf
+        if configurator is not None:
+            cmd += " configurator=%d" % configurator
+        if "OK" not in self.request(cmd):
+            raise Exception("Failed to set bootstrapping parameters")
+
     def dpp_listen(self, freq, netrole=None, qr=None, role=None):
         cmd = "DPP_LISTEN " + str(freq)
         if netrole:
@@ -452,10 +472,14 @@ class Hostapd:
 
     def dpp_auth_init(self, peer=None, uri=None, conf=None, configurator=None,
                       extra=None, own=None, role=None, neg_freq=None,
-                      ssid=None, passphrase=None, expect_fail=False):
+                      ssid=None, passphrase=None, expect_fail=False,
+                      conn_status=False, nfc_uri=None):
         cmd = "DPP_AUTH_INIT"
         if peer is None:
-            peer = self.dpp_qr_code(uri)
+            if nfc_uri:
+                peer = self.dpp_nfc_uri(nfc_uri)
+            else:
+                peer = self.dpp_qr_code(uri)
         cmd += " peer=%d" % peer
         if own is not None:
             cmd += " own=%d" % own
@@ -473,6 +497,8 @@ class Hostapd:
             cmd += " ssid=" + binascii.hexlify(ssid.encode()).decode()
         if passphrase:
             cmd += " pass=" + binascii.hexlify(passphrase.encode()).decode()
+        if conn_status:
+            cmd += " conn_status=1"
         res = self.request(cmd)
         if expect_fail:
             if "FAIL" not in res:
@@ -534,6 +560,23 @@ class Hostapd:
 
     def send_file(self, src, dst):
         self.host.send_file(src, dst)
+
+    def get_ptksa(self, bssid, cipher):
+        res = self.request("PTKSA_CACHE_LIST")
+        lines = res.splitlines()
+        for l in lines:
+            if bssid not in l or cipher not in l:
+                continue
+            vals = dict()
+            [index, addr, cipher, expiration, tk, kdk] = l.split(' ', 5)
+            vals['index'] = index
+            vals['addr'] = addr
+            vals['cipher'] = cipher
+            vals['expiration'] = expiration
+            vals['tk'] = tk
+            vals['kdk'] = kdk
+            return vals
+        return None
 
 def add_ap(apdev, params, wait_enabled=True, no_enable=False, timeout=30,
            global_ctrl_override=None, driver=False):

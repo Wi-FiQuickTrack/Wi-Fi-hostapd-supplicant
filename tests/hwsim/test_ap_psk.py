@@ -168,6 +168,11 @@ def test_ap_wpa2_psk_file_keyid(dev, apdev, params):
 
     check_disconnect(dev, [True, True, False])
 
+    with open(psk_file, 'w') as f:
+        f.write('broken\n')
+    if "FAIL" not in hapd.request("RELOAD_WPA_PSK"):
+        raise Exception("RELOAD_WPA_PSK succeeded with invalid file")
+
 @remote_compatible
 def test_ap_wpa2_psk_mem(dev, apdev):
     """WPA2-PSK AP with passphrase only in memory"""
@@ -232,6 +237,9 @@ def test_ap_wpa2_ptk_rekey_blocked_ap(dev, apdev):
     params = hostapd.wpa2_params(ssid=ssid, passphrase=passphrase)
     params['wpa_deny_ptk0_rekey'] = "2"
     hapd = hostapd.add_ap(apdev[0], params)
+    conf = hapd.request("GET_CONFIG").splitlines()
+    if "wpa_deny_ptk0_rekey=2" not in conf:
+        raise Exception("wpa_deny_ptk0_rekey value not in GET_CONFIG")
     dev[0].connect(ssid, psk=passphrase, wpa_ptk_rekey="1", scan_freq="2412")
     ev = dev[0].wait_event(["WPA: Key negotiation completed",
                             "CTRL-EVENT-DISCONNECTED"])
@@ -668,30 +676,39 @@ def test_ap_wpa2_ext_add_to_bridge(dev, apdev):
         hostapd.cmd_execute(apdev[0], ['brctl', 'delif', br_ifname, ifname])
         hostapd.cmd_execute(apdev[0], ['brctl', 'delbr', br_ifname])
 
-def test_ap_wpa2_psk_ext(dev, apdev):
-    """WPA2-PSK AP using external EAPOL I/O"""
-    bssid = apdev[0]['bssid']
+def setup_psk_ext(dev, apdev, wpa_ptk_rekey=None):
     ssid = "test-wpa2-psk"
     passphrase = 'qwertyuiop'
     psk = '602e323e077bc63bd80307ef4745b754b0ae0a925c2638ecd13a794b9527b9e6'
     params = hostapd.wpa2_params(ssid=ssid)
     params['wpa_psk'] = psk
-    hapd = hostapd.add_ap(apdev[0], params)
+    if wpa_ptk_rekey:
+        params['wpa_ptk_rekey'] = wpa_ptk_rekey
+    hapd = hostapd.add_ap(apdev, params)
     hapd.request("SET ext_eapol_frame_io 1")
-    dev[0].request("SET ext_eapol_frame_io 1")
-    dev[0].connect(ssid, psk=passphrase, scan_freq="2412", wait_connect=False)
-    addr = dev[0].p2p_interface_addr()
+    dev.request("SET ext_eapol_frame_io 1")
+    dev.connect(ssid, psk=passphrase, scan_freq="2412", wait_connect=False)
+    return hapd
+
+def ext_4way_hs(hapd, dev):
+    bssid = hapd.own_addr()
+    addr = dev.own_addr()
+    first = None
+    last = None
     while True:
         ev = hapd.wait_event(["EAPOL-TX", "AP-STA-CONNECTED"], timeout=15)
         if ev is None:
             raise Exception("Timeout on EAPOL-TX from hostapd")
         if "AP-STA-CONNECTED" in ev:
-            dev[0].wait_connected(timeout=15)
+            dev.wait_connected(timeout=15)
             break
-        res = dev[0].request("EAPOL_RX " + bssid + " " + ev.split(' ')[2])
+        if not first:
+            first = ev.split(' ')[2]
+        last = ev.split(' ')[2]
+        res = dev.request("EAPOL_RX " + bssid + " " + ev.split(' ')[2])
         if "OK" not in res:
             raise Exception("EAPOL_RX to wpa_supplicant failed")
-        ev = dev[0].wait_event(["EAPOL-TX", "CTRL-EVENT-CONNECTED"], timeout=15)
+        ev = dev.wait_event(["EAPOL-TX", "CTRL-EVENT-CONNECTED"], timeout=15)
         if ev is None:
             raise Exception("Timeout on EAPOL-TX from wpa_supplicant")
         if "CTRL-EVENT-CONNECTED" in ev:
@@ -699,19 +716,45 @@ def test_ap_wpa2_psk_ext(dev, apdev):
         res = hapd.request("EAPOL_RX " + addr + " " + ev.split(' ')[2])
         if "OK" not in res:
             raise Exception("EAPOL_RX to hostapd failed")
+    return first, last
+
+def test_ap_wpa2_psk_ext(dev, apdev):
+    """WPA2-PSK AP using external EAPOL I/O"""
+    hapd = setup_psk_ext(dev[0], apdev[0])
+    ext_4way_hs(hapd, dev[0])
+
+def test_ap_wpa2_psk_unexpected(dev, apdev):
+    """WPA2-PSK and supplicant receiving unexpected EAPOL-Key frames"""
+    hapd = setup_psk_ext(dev[0], apdev[0])
+    first, last = ext_4way_hs(hapd, dev[0])
+
+    # Not associated - Delay processing of received EAPOL frame (state=COMPLETED
+    # bssid=02:00:00:00:03:00)
+    other = "02:11:22:33:44:55"
+    res = dev[0].request("EAPOL_RX " + other + " " + first)
+    if "OK" not in res:
+        raise Exception("EAPOL_RX to wpa_supplicant failed")
+
+    # WPA: EAPOL-Key Replay Counter did not increase - dropping packet
+    bssid = hapd.own_addr()
+    res = dev[0].request("EAPOL_RX " + bssid + " " + last)
+    if "OK" not in res:
+        raise Exception("EAPOL_RX to wpa_supplicant failed")
+
+    # WPA: Invalid EAPOL-Key MIC - dropping packet
+    msg = last[0:18] + '01' + last[20:]
+    res = dev[0].request("EAPOL_RX " + bssid + " " + msg)
+    if "OK" not in res:
+        raise Exception("EAPOL_RX to wpa_supplicant failed")
+
+    ev = dev[0].wait_event(["CTRL-EVENT-DISCONNECTED"], timeout=12)
+    if ev is not None:
+        raise Exception("Unexpected disconnection")
 
 def test_ap_wpa2_psk_ext_retry_msg_3(dev, apdev):
     """WPA2-PSK AP using external EAPOL I/O and retry for EAPOL-Key msg 3/4"""
+    hapd = setup_psk_ext(dev[0], apdev[0])
     bssid = apdev[0]['bssid']
-    ssid = "test-wpa2-psk"
-    passphrase = 'qwertyuiop'
-    psk = '602e323e077bc63bd80307ef4745b754b0ae0a925c2638ecd13a794b9527b9e6'
-    params = hostapd.wpa2_params(ssid=ssid)
-    params['wpa_psk'] = psk
-    hapd = hostapd.add_ap(apdev[0], params)
-    hapd.request("SET ext_eapol_frame_io 1")
-    dev[0].request("SET ext_eapol_frame_io 1")
-    dev[0].connect(ssid, psk=passphrase, scan_freq="2412", wait_connect=False)
     addr = dev[0].p2p_interface_addr()
 
     # EAPOL-Key msg 1/4
@@ -769,16 +812,8 @@ def test_ap_wpa2_psk_ext_retry_msg_3(dev, apdev):
 
 def test_ap_wpa2_psk_ext_retry_msg_3b(dev, apdev):
     """WPA2-PSK AP using external EAPOL I/O and retry for EAPOL-Key msg 3/4 (b)"""
+    hapd = setup_psk_ext(dev[0], apdev[0])
     bssid = apdev[0]['bssid']
-    ssid = "test-wpa2-psk"
-    passphrase = 'qwertyuiop'
-    psk = '602e323e077bc63bd80307ef4745b754b0ae0a925c2638ecd13a794b9527b9e6'
-    params = hostapd.wpa2_params(ssid=ssid)
-    params['wpa_psk'] = psk
-    hapd = hostapd.add_ap(apdev[0], params)
-    hapd.request("SET ext_eapol_frame_io 1")
-    dev[0].request("SET ext_eapol_frame_io 1")
-    dev[0].connect(ssid, psk=passphrase, scan_freq="2412", wait_connect=False)
     addr = dev[0].p2p_interface_addr()
 
     # EAPOL-Key msg 1/4
@@ -844,16 +879,8 @@ def test_ap_wpa2_psk_ext_retry_msg_3b(dev, apdev):
 
 def test_ap_wpa2_psk_ext_retry_msg_3c(dev, apdev):
     """WPA2-PSK AP using external EAPOL I/O and retry for EAPOL-Key msg 3/4 (c)"""
+    hapd = setup_psk_ext(dev[0], apdev[0])
     bssid = apdev[0]['bssid']
-    ssid = "test-wpa2-psk"
-    passphrase = 'qwertyuiop'
-    psk = '602e323e077bc63bd80307ef4745b754b0ae0a925c2638ecd13a794b9527b9e6'
-    params = hostapd.wpa2_params(ssid=ssid)
-    params['wpa_psk'] = psk
-    hapd = hostapd.add_ap(apdev[0], params)
-    hapd.request("SET ext_eapol_frame_io 1")
-    dev[0].request("SET ext_eapol_frame_io 1")
-    dev[0].connect(ssid, psk=passphrase, scan_freq="2412", wait_connect=False)
     addr = dev[0].p2p_interface_addr()
 
     # EAPOL-Key msg 1/4
@@ -936,16 +963,8 @@ def test_ap_wpa2_psk_ext_retry_msg_3c(dev, apdev):
 
 def test_ap_wpa2_psk_ext_retry_msg_3d(dev, apdev):
     """WPA2-PSK AP using external EAPOL I/O and retry for EAPOL-Key msg 3/4 (d)"""
+    hapd = setup_psk_ext(dev[0], apdev[0])
     bssid = apdev[0]['bssid']
-    ssid = "test-wpa2-psk"
-    passphrase = 'qwertyuiop'
-    psk = '602e323e077bc63bd80307ef4745b754b0ae0a925c2638ecd13a794b9527b9e6'
-    params = hostapd.wpa2_params(ssid=ssid)
-    params['wpa_psk'] = psk
-    hapd = hostapd.add_ap(apdev[0], params)
-    hapd.request("SET ext_eapol_frame_io 1")
-    dev[0].request("SET ext_eapol_frame_io 1")
-    dev[0].connect(ssid, psk=passphrase, scan_freq="2412", wait_connect=False)
     addr = dev[0].p2p_interface_addr()
 
     # EAPOL-Key msg 1/4
@@ -1031,16 +1050,8 @@ def test_ap_wpa2_psk_ext_retry_msg_3d(dev, apdev):
 
 def test_ap_wpa2_psk_ext_retry_msg_3e(dev, apdev):
     """WPA2-PSK AP using external EAPOL I/O and retry for EAPOL-Key msg 3/4 (e)"""
+    hapd = setup_psk_ext(dev[0], apdev[0])
     bssid = apdev[0]['bssid']
-    ssid = "test-wpa2-psk"
-    passphrase = 'qwertyuiop'
-    psk = '602e323e077bc63bd80307ef4745b754b0ae0a925c2638ecd13a794b9527b9e6'
-    params = hostapd.wpa2_params(ssid=ssid)
-    params['wpa_psk'] = psk
-    hapd = hostapd.add_ap(apdev[0], params)
-    hapd.request("SET ext_eapol_frame_io 1")
-    dev[0].request("SET ext_eapol_frame_io 1")
-    dev[0].connect(ssid, psk=passphrase, scan_freq="2412", wait_connect=False)
     addr = dev[0].p2p_interface_addr()
 
     # EAPOL-Key msg 1/4
@@ -1137,17 +1148,8 @@ def test_ap_wpa2_psk_ext_retry_msg_3e(dev, apdev):
 
 def test_ap_wpa2_psk_ext_delayed_ptk_rekey(dev, apdev):
     """WPA2-PSK AP using external EAPOL I/O and delayed PTK rekey exchange"""
+    hapd = setup_psk_ext(dev[0], apdev[0], wpa_ptk_rekey="3")
     bssid = apdev[0]['bssid']
-    ssid = "test-wpa2-psk"
-    passphrase = 'qwertyuiop'
-    psk = '602e323e077bc63bd80307ef4745b754b0ae0a925c2638ecd13a794b9527b9e6'
-    params = hostapd.wpa2_params(ssid=ssid)
-    params['wpa_psk'] = psk
-    params['wpa_ptk_rekey'] = '3'
-    hapd = hostapd.add_ap(apdev[0], params)
-    hapd.request("SET ext_eapol_frame_io 1")
-    dev[0].request("SET ext_eapol_frame_io 1")
-    dev[0].connect(ssid, psk=passphrase, scan_freq="2412", wait_connect=False)
     addr = dev[0].p2p_interface_addr()
 
     # EAPOL-Key msg 1/4
@@ -2313,7 +2315,8 @@ def test_ap_wpa2_psk_supp_proto_too_long_gtk_in_group_msg(dev, apdev):
                               key_info=0x13c2)
     counter += 1
     send_eapol(dev[0], bssid, build_eapol(msg))
-    ev = dev[0].wait_event(["WPA: Unsupported CCMP Group Cipher key length 33"])
+    ev = dev[0].wait_event(["WPA: Unsupported CCMP Group Cipher key length 33",
+                            "RSN: Too long GTK in GTK KDE (len=33)"])
     if ev is None:
         raise Exception("Too long GTK KDE not reported")
     dev[0].wait_disconnected(timeout=1)
@@ -2699,16 +2702,8 @@ def test_ap_wpa2_psk_ifdown(dev, apdev):
 
 def test_ap_wpa2_psk_drop_first_msg_4(dev, apdev):
     """WPA2-PSK and first EAPOL-Key msg 4/4 dropped"""
+    hapd = setup_psk_ext(dev[0], apdev[0])
     bssid = apdev[0]['bssid']
-    ssid = "test-wpa2-psk"
-    passphrase = 'qwertyuiop'
-    psk = '602e323e077bc63bd80307ef4745b754b0ae0a925c2638ecd13a794b9527b9e6'
-    params = hostapd.wpa2_params(ssid=ssid)
-    params['wpa_psk'] = psk
-    hapd = hostapd.add_ap(apdev[0], params)
-    hapd.request("SET ext_eapol_frame_io 1")
-    dev[0].request("SET ext_eapol_frame_io 1")
-    dev[0].connect(ssid, psk=passphrase, scan_freq="2412", wait_connect=False)
     addr = dev[0].own_addr()
 
     # EAPOL-Key msg 1/4

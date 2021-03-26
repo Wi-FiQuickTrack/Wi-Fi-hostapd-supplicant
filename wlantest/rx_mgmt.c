@@ -51,6 +51,8 @@ static const char * mgmt_stype(u16 stype)
 		return "DEAUTH";
 	case WLAN_FC_STYPE_ACTION:
 		return "ACTION";
+	case WLAN_FC_STYPE_ACTION_NO_ACK:
+		return "ACTION-NO-ACK";
 	}
 	return "??";
 }
@@ -290,7 +292,7 @@ static void process_ft_auth(struct wlantest *wt, struct wlantest_bss *bss,
 	    wpa_pmk_r1_to_ptk(sta->pmk_r1, sta->pmk_r1_len, parse.fte_snonce,
 			      parse.fte_anonce, sta->addr, bss->bssid,
 			      sta->pmk_r1_name, &ptk, ptk_name, sta->key_mgmt,
-			      sta->pairwise_cipher) < 0)
+			      sta->pairwise_cipher, 0) < 0)
 		return;
 
 	add_note(wt, MSG_DEBUG, "Derived new PTK");
@@ -494,7 +496,7 @@ static int try_rmsk(struct wlantest *wt, struct wlantest_bss *bss,
 			    sta->snonce, sta->anonce, NULL, 0,
 			    &ptk, ick, &ick_len,
 			    sta->key_mgmt, sta->pairwise_cipher,
-			    NULL, NULL) < 0)
+			    NULL, NULL, 0) < 0)
 		return -1;
 
 	/* Check AES-SIV decryption with the derived key */
@@ -1779,7 +1781,8 @@ static void rx_mgmt_action_ft_response(struct wlantest *wt,
 	    wpa_pmk_r1_to_ptk(sta->pmk_r1, sta->pmk_r1_len, parse.fte_snonce,
 			      parse.fte_anonce, new_sta->addr, bss->bssid,
 			      sta->pmk_r1_name, &ptk, ptk_name,
-			      new_sta->key_mgmt, new_sta->pairwise_cipher) < 0)
+			      new_sta->key_mgmt, new_sta->pairwise_cipher,
+			      0) < 0)
 		return;
 
 	add_note(wt, MSG_DEBUG, "Derived new PTK");
@@ -1913,8 +1916,126 @@ static void rx_mgmt_action_sa_query(struct wlantest *wt,
 }
 
 
+static void
+rx_mgmt_location_measurement_report(struct wlantest *wt,
+				    const struct ieee80211_mgmt *mgmt,
+				    size_t len, bool no_ack)
+{
+	const u8 *pos = mgmt->u.action.u.public_action.variable;
+	const u8 *end = ((const u8 *) mgmt) + len;
+
+	if (end - pos < 1) {
+		add_note(wt, MSG_INFO,
+			 "Too short Location Measurement Report frame from "
+			 MACSTR, MAC2STR(mgmt->sa));
+		return;
+	}
+
+	wpa_printf(MSG_DEBUG, "Location Measurement Report " MACSTR " --> "
+		   MACSTR " (dialog token %u)",
+		   MAC2STR(mgmt->sa), MAC2STR(mgmt->da), *pos);
+	pos++;
+
+	if (!no_ack)
+		add_note(wt, MSG_INFO,
+			 "Protected Fine Timing Measurement Report incorrectly as an Action frame from "
+			 MACSTR, MAC2STR(mgmt->sa));
+
+	wpa_hexdump(MSG_MSGDUMP, "Location Measurement Report contents",
+		    pos, end - pos);
+}
+
+
+static void rx_mgmt_action_no_bss_public(struct wlantest *wt,
+					 const struct ieee80211_mgmt *mgmt,
+					 size_t len, bool no_ack)
+{
+	switch (mgmt->u.action.u.public_action.action) {
+	case WLAN_PA_LOCATION_MEASUREMENT_REPORT:
+		rx_mgmt_location_measurement_report(wt, mgmt, len, no_ack);
+		break;
+	}
+}
+
+
+static void rx_mgmt_prot_ftm_request(struct wlantest *wt,
+				     const struct ieee80211_mgmt *mgmt,
+				     size_t len, bool no_ack)
+{
+	wpa_printf(MSG_DEBUG, "Protected Fine Timing Measurement Request "
+		   MACSTR " --> " MACSTR,
+		   MAC2STR(mgmt->sa), MAC2STR(mgmt->da));
+	if (no_ack)
+		add_note(wt, MSG_INFO,
+			 "Protected Fine Timing Measurement Request incorrectly as an Action No Ack frame from "
+			 MACSTR, MAC2STR(mgmt->sa));
+}
+
+
+static void rx_mgmt_prot_ftm(struct wlantest *wt,
+			     const struct ieee80211_mgmt *mgmt,
+			     size_t len, bool no_ack)
+{
+	wpa_printf(MSG_DEBUG, "Protected Fine Timing Measurement "
+		   MACSTR " --> " MACSTR,
+		   MAC2STR(mgmt->sa), MAC2STR(mgmt->da));
+	if (no_ack)
+		add_note(wt, MSG_INFO,
+			 "Protected Fine Timing Measurement incorrectly as an Action No Ack frame from "
+			 MACSTR, MAC2STR(mgmt->sa));
+}
+
+
+static void rx_mgmt_prot_ftm_report(struct wlantest *wt,
+				     const struct ieee80211_mgmt *mgmt,
+				     size_t len, bool no_ack)
+{
+	wpa_printf(MSG_DEBUG, "Protected Fine Timing Measurement Report "
+		   MACSTR " --> " MACSTR,
+		   MAC2STR(mgmt->sa), MAC2STR(mgmt->da));
+	if (!no_ack)
+		add_note(wt, MSG_INFO,
+			 "Protected Fine Timing Measurement Report incorrectly as an Action frame from "
+			 MACSTR, MAC2STR(mgmt->sa));
+}
+
+
+static void
+rx_mgmt_action_no_bss_protected_ftm(struct wlantest *wt,
+				    const struct ieee80211_mgmt *mgmt,
+				    size_t len, bool no_ack)
+{
+	switch (mgmt->u.action.u.public_action.action) {
+	case WLAN_PROT_FTM_REQUEST:
+		rx_mgmt_prot_ftm_request(wt, mgmt, len, no_ack);
+		break;
+	case WLAN_PROT_FTM:
+		rx_mgmt_prot_ftm(wt, mgmt, len, no_ack);
+		break;
+	case WLAN_PROT_FTM_REPORT:
+		rx_mgmt_prot_ftm_report(wt, mgmt, len, no_ack);
+		break;
+	}
+}
+
+
+static void rx_mgmt_action_no_bss(struct wlantest *wt,
+				  const struct ieee80211_mgmt *mgmt, size_t len,
+				  bool no_ack)
+{
+	switch (mgmt->u.action.category) {
+	case WLAN_ACTION_PUBLIC:
+		rx_mgmt_action_no_bss_public(wt, mgmt, len, no_ack);
+		break;
+	case WLAN_ACTION_PROTECTED_FTM:
+		rx_mgmt_action_no_bss_protected_ftm(wt, mgmt, len, no_ack);
+		break;
+	}
+}
+
+
 static void rx_mgmt_action(struct wlantest *wt, const u8 *data, size_t len,
-			   int valid)
+			   int valid, bool no_ack)
 {
 	const struct ieee80211_mgmt *mgmt;
 	struct wlantest_bss *bss;
@@ -1929,6 +2050,24 @@ static void rx_mgmt_action(struct wlantest *wt, const u8 *data, size_t len,
 			 MAC2STR(mgmt->bssid), mgmt->u.action.category);
 		return; /* Ignore group addressed Action frames for now */
 	}
+
+	if (len < 24 + 2) {
+		add_note(wt, MSG_INFO, "Too short Action frame from " MACSTR,
+			 MAC2STR(mgmt->sa));
+		return;
+	}
+
+	wpa_printf(MSG_DEBUG, "ACTION%s " MACSTR " -> " MACSTR
+		   " BSSID=" MACSTR " (category=%u) (valid=%d)",
+		   no_ack ? "-NO-ACK" : "",
+		   MAC2STR(mgmt->sa), MAC2STR(mgmt->da), MAC2STR(mgmt->bssid),
+		   mgmt->u.action.category, valid);
+	wpa_hexdump(MSG_MSGDUMP, "ACTION payload", data + 24, len - 24);
+
+	if (is_broadcast_ether_addr(mgmt->bssid)) {
+		rx_mgmt_action_no_bss(wt, mgmt, len, no_ack);
+		return;
+	}
 	bss = bss_get(wt, mgmt->bssid);
 	if (bss == NULL)
 		return;
@@ -1938,18 +2077,6 @@ static void rx_mgmt_action(struct wlantest *wt, const u8 *data, size_t len,
 		sta = sta_get(bss, mgmt->sa);
 	if (sta == NULL)
 		return;
-
-	if (len < 24 + 1) {
-		add_note(wt, MSG_INFO, "Too short Action frame from " MACSTR,
-			 MAC2STR(mgmt->sa));
-		return;
-	}
-
-	wpa_printf(MSG_DEBUG, "ACTION " MACSTR " -> " MACSTR
-		   " (category=%u) (valid=%d)",
-		   MAC2STR(mgmt->sa), MAC2STR(mgmt->da),
-		   mgmt->u.action.category, valid);
-	wpa_hexdump(MSG_MSGDUMP, "ACTION payload", data + 24, len - 24);
 
 	if (mgmt->u.action.category != WLAN_ACTION_PUBLIC &&
 	    sta->state < STATE3) {
@@ -2061,7 +2188,8 @@ static int check_bip(struct wlantest *wt, const u8 *data, size_t len)
 	fc = le_to_host16(mgmt->frame_control);
 	stype = WLAN_FC_GET_STYPE(fc);
 
-	if (stype == WLAN_FC_STYPE_ACTION) {
+	if (stype == WLAN_FC_STYPE_ACTION ||
+	    stype == WLAN_FC_STYPE_ACTION_NO_ACK) {
 		if (len < 24 + 1)
 			return 0;
 		if (mgmt->u.action.category == WLAN_ACTION_PUBLIC)
@@ -2138,6 +2266,56 @@ static int check_bip(struct wlantest *wt, const u8 *data, size_t len)
 }
 
 
+static u8 * try_tk(struct wpa_ptk *ptk, const u8 *data, size_t len,
+		   size_t *dlen)
+{
+	const struct ieee80211_hdr *hdr;
+	u8 *decrypted, *frame;
+
+	hdr = (const struct ieee80211_hdr *) data;
+	decrypted = ccmp_decrypt(ptk->tk, hdr, data + 24, len - 24, dlen);
+	if (!decrypted)
+		return NULL;
+
+	frame = os_malloc(24 + *dlen);
+	if (frame) {
+		os_memcpy(frame, data, 24);
+		os_memcpy(frame + 24, decrypted, *dlen);
+		*dlen += 24;
+	}
+	os_free(decrypted);
+	return frame;
+}
+
+
+static u8 * mgmt_ccmp_decrypt_tk(struct wlantest *wt, const u8 *data,
+				 size_t len, size_t *dlen)
+{
+	struct wlantest_ptk *ptk;
+	u8 *decrypted;
+	int prev_level = wpa_debug_level;
+	int keyid;
+
+	keyid = data[24 + 3] >> 6;
+
+	wpa_debug_level = MSG_WARNING;
+	dl_list_for_each(ptk, &wt->ptk, struct wlantest_ptk, list) {
+		decrypted = try_tk(&ptk->ptk, data, len, dlen);
+		if (decrypted) {
+			wpa_debug_level = prev_level;
+			add_note(wt, MSG_DEBUG,
+				 "Found TK match from the list of all known TKs");
+			write_decrypted_note(wt, decrypted, ptk->ptk.tk,
+					     ptk->ptk.tk_len, keyid);
+			return decrypted;
+		}
+	}
+	wpa_debug_level = prev_level;
+
+	return NULL;
+}
+
+
 static u8 * mgmt_ccmp_decrypt(struct wlantest *wt, const u8 *data, size_t len,
 			      size_t *dlen)
 {
@@ -2147,19 +2325,11 @@ static u8 * mgmt_ccmp_decrypt(struct wlantest *wt, const u8 *data, size_t len,
 	int keyid;
 	u8 *decrypted, *frame = NULL;
 	u8 pn[6], *rsc;
+	u16 fc;
+	u8 mask;
 
 	hdr = (const struct ieee80211_hdr *) data;
-	bss = bss_get(wt, hdr->addr3);
-	if (bss == NULL)
-		return NULL;
-	if (os_memcmp(hdr->addr1, hdr->addr3, ETH_ALEN) == 0)
-		sta = sta_get(bss, hdr->addr2);
-	else
-		sta = sta_get(bss, hdr->addr1);
-	if (sta == NULL || !sta->ptk_set) {
-		add_note(wt, MSG_MSGDUMP, "No PTK known to decrypt the frame");
-		return NULL;
-	}
+	fc = le_to_host16(hdr->frame_control);
 
 	if (len < 24 + 4)
 		return NULL;
@@ -2171,7 +2341,11 @@ static u8 * mgmt_ccmp_decrypt(struct wlantest *wt, const u8 *data, size_t len,
 		return NULL;
 	}
 
-	if (data[24 + 2] != 0 || (data[24 + 3] & 0x1f) != 0) {
+	mask = 0x1f;
+	if (WLAN_FC_GET_STYPE(fc) == WLAN_FC_STYPE_ACTION ||
+	    WLAN_FC_GET_STYPE(fc) == WLAN_FC_STYPE_ACTION_NO_ACK)
+		mask &= ~0x10; /* FTM */
+	if (data[24 + 2] != 0 || (data[24 + 3] & mask) != 0) {
 		add_note(wt, MSG_INFO, "CCMP mgmt frame from " MACSTR " used "
 			 "non-zero reserved bit", MAC2STR(hdr->addr2));
 	}
@@ -2181,6 +2355,21 @@ static u8 * mgmt_ccmp_decrypt(struct wlantest *wt, const u8 *data, size_t len,
 		add_note(wt, MSG_INFO, "Unexpected non-zero KeyID %d in "
 			 "individually addressed Management frame from "
 			 MACSTR, keyid, MAC2STR(hdr->addr2));
+	}
+
+	bss = bss_get(wt, hdr->addr3);
+	if (bss == NULL)
+		return mgmt_ccmp_decrypt_tk(wt, data, len, dlen);
+	if (os_memcmp(hdr->addr1, hdr->addr3, ETH_ALEN) == 0)
+		sta = sta_get(bss, hdr->addr2);
+	else
+		sta = sta_get(bss, hdr->addr1);
+	if (sta == NULL || !sta->ptk_set) {
+		decrypted = mgmt_ccmp_decrypt_tk(wt, data, len, dlen);
+		if (!decrypted)
+			add_note(wt, MSG_MSGDUMP,
+				 "No PTK known to decrypt the frame");
+		return decrypted;
 	}
 
 	if (os_memcmp(hdr->addr1, hdr->addr3, ETH_ALEN) == 0)
@@ -2236,7 +2425,8 @@ static int check_mgmt_ccmp(struct wlantest *wt, const u8 *data, size_t len)
 	mgmt = (const struct ieee80211_mgmt *) data;
 	fc = le_to_host16(mgmt->frame_control);
 
-	if (WLAN_FC_GET_STYPE(fc) == WLAN_FC_STYPE_ACTION) {
+	if (WLAN_FC_GET_STYPE(fc) == WLAN_FC_STYPE_ACTION ||
+	    WLAN_FC_GET_STYPE(fc) == WLAN_FC_STYPE_ACTION_NO_ACK) {
 		if (len > 24 &&
 		    mgmt->u.action.category == WLAN_ACTION_PUBLIC)
 			return 0; /* Not a robust management frame */
@@ -2255,7 +2445,8 @@ static int check_mgmt_ccmp(struct wlantest *wt, const u8 *data, size_t len)
 	if ((bss->rsn_capab & WPA_CAPABILITY_MFPC) &&
 	    (sta->rsn_capab & WPA_CAPABILITY_MFPC) &&
 	    (sta->state == STATE3 ||
-	     WLAN_FC_GET_STYPE(fc) == WLAN_FC_STYPE_ACTION)) {
+	     WLAN_FC_GET_STYPE(fc) == WLAN_FC_STYPE_ACTION ||
+	     WLAN_FC_GET_STYPE(fc) == WLAN_FC_STYPE_ACTION_NO_ACK)) {
 		add_note(wt, MSG_INFO, "Robust individually-addressed "
 			 "management frame sent without CCMP by "
 			 MACSTR, MAC2STR(mgmt->sa));
@@ -2285,7 +2476,8 @@ void rx_mgmt(struct wlantest *wt, const u8 *data, size_t len)
 	if ((hdr->addr1[0] & 0x01) &&
 	    (stype == WLAN_FC_STYPE_DEAUTH ||
 	     stype == WLAN_FC_STYPE_DISASSOC ||
-	     stype == WLAN_FC_STYPE_ACTION)) {
+	     stype == WLAN_FC_STYPE_ACTION ||
+	     stype == WLAN_FC_STYPE_ACTION_NO_ACK)) {
 		if (check_bip(wt, data, len) < 0)
 			valid = 0;
 	}
@@ -2305,7 +2497,8 @@ void rx_mgmt(struct wlantest *wt, const u8 *data, size_t len)
 	    !(hdr->addr1[0] & 0x01) &&
 	    (stype == WLAN_FC_STYPE_DEAUTH ||
 	     stype == WLAN_FC_STYPE_DISASSOC ||
-	     stype == WLAN_FC_STYPE_ACTION)) {
+	     stype == WLAN_FC_STYPE_ACTION ||
+	     stype == WLAN_FC_STYPE_ACTION_NO_ACK)) {
 		decrypted = mgmt_ccmp_decrypt(wt, data, len, &dlen);
 		if (decrypted) {
 			write_pcap_decrypted(wt, decrypted, dlen, NULL, 0);
@@ -2319,7 +2512,8 @@ void rx_mgmt(struct wlantest *wt, const u8 *data, size_t len)
 	    !(hdr->addr1[0] & 0x01) &&
 	    (stype == WLAN_FC_STYPE_DEAUTH ||
 	     stype == WLAN_FC_STYPE_DISASSOC ||
-	     stype == WLAN_FC_STYPE_ACTION)) {
+	     stype == WLAN_FC_STYPE_ACTION ||
+	     stype == WLAN_FC_STYPE_ACTION_NO_ACK)) {
 		if (check_mgmt_ccmp(wt, data, len) < 0)
 			valid = 0;
 	}
@@ -2353,7 +2547,10 @@ void rx_mgmt(struct wlantest *wt, const u8 *data, size_t len)
 		rx_mgmt_disassoc(wt, data, len, valid);
 		break;
 	case WLAN_FC_STYPE_ACTION:
-		rx_mgmt_action(wt, data, len, valid);
+		rx_mgmt_action(wt, data, len, valid, false);
+		break;
+	case WLAN_FC_STYPE_ACTION_NO_ACK:
+		rx_mgmt_action(wt, data, len, valid, true);
 		break;
 	}
 

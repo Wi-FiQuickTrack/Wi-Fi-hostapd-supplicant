@@ -136,7 +136,8 @@ def run_roams(dev, apdev, hapd0, hapd1, ssid, passphrase, over_ds=False,
               group_mgmt=None, ocv=None, sae_password=None,
               sae_password_id=None, sae_and_psk=False, pmksa_caching=False,
               roam_with_reassoc=False, also_non_ft=False, only_one_way=False,
-              wait_before_roam=0, return_after_initial=False, ieee80211w="1"):
+              wait_before_roam=0, return_after_initial=False, ieee80211w="1",
+              sae_transition=False):
     logger.info("Connect to first AP")
 
     copts = {}
@@ -161,7 +162,9 @@ def run_roams(dev, apdev, hapd0, hapd1, ssid, passphrase, over_ds=False,
         copts["identity"] = eap_identity
         copts["password"] = "abcdefghijklmnop0123456789abcdef"
     else:
-        if sae:
+        if sae_transition:
+            copts["key_mgmt"] = "FT-SAE FT-PSK"
+        elif sae:
             copts["key_mgmt"] = "SAE FT-SAE" if sae_and_psk else "FT-SAE"
         else:
             copts["key_mgmt"] = "FT-PSK"
@@ -218,6 +221,10 @@ def run_roams(dev, apdev, hapd0, hapd1, ssid, passphrase, over_ds=False,
     dev.scan_for_bss(ap2['bssid'], freq="2412")
 
     for i in range(0, roams):
+        dev.dump_monitor()
+        hapd1ap.dump_monitor()
+        hapd2ap.dump_monitor()
+
         # Roaming artificially fast can make data test fail because the key is
         # set later.
         time.sleep(0.01)
@@ -236,10 +243,17 @@ def run_roams(dev, apdev, hapd0, hapd1, ssid, passphrase, over_ds=False,
             raise Exception("Did not connect to correct AP")
         if (i == 0 or i == roams - 1) and test_connectivity:
             hapd2ap.wait_sta()
+            dev.dump_monitor()
+            hapd1ap.dump_monitor()
+            hapd2ap.dump_monitor()
             if conndev:
                 hwsim_utils.test_connectivity_iface(dev, hapd2ap, conndev)
             else:
                 hwsim_utils.test_connectivity(dev, hapd2ap)
+
+        dev.dump_monitor()
+        hapd1ap.dump_monitor()
+        hapd2ap.dump_monitor()
 
         if only_one_way:
             return
@@ -259,6 +273,9 @@ def run_roams(dev, apdev, hapd0, hapd1, ssid, passphrase, over_ds=False,
             raise Exception("Did not connect to correct AP")
         if (i == 0 or i == roams - 1) and test_connectivity:
             hapd1ap.wait_sta()
+            dev.dump_monitor()
+            hapd1ap.dump_monitor()
+            hapd2ap.dump_monitor()
             if conndev:
                 hwsim_utils.test_connectivity_iface(dev, hapd1ap, conndev)
             else:
@@ -998,7 +1015,8 @@ def test_ap_ft_over_ds_pull_vlan(dev, apdev):
 def start_ft_sae(dev, apdev, wpa_ptk_rekey=None, sae_pwe=None,
                  rsne_override=None, rsnxe_override=None,
                  no_beacon_rsnxe2=False, ext_key_id=False,
-                 skip_prune_assoc=False, ft_rsnxe_used=False):
+                 skip_prune_assoc=False, ft_rsnxe_used=False,
+                 sae_transition=False):
     if "SAE" not in dev.get_capability("auth_alg"):
         raise HwsimSkip("SAE not supported")
     ssid = "test-ft"
@@ -1022,7 +1040,8 @@ def start_ft_sae(dev, apdev, wpa_ptk_rekey=None, sae_pwe=None,
         params['ft_rsnxe_used'] = '1'
     hapd0 = hostapd.add_ap(apdev[0], params)
     params = ft_params2(ssid=ssid, passphrase=passphrase)
-    params['wpa_key_mgmt'] = "FT-SAE"
+    if not sae_transition:
+        params['wpa_key_mgmt'] = "FT-SAE"
     if wpa_ptk_rekey:
         params['wpa_ptk_rekey'] = str(wpa_ptk_rekey)
     if sae_pwe is not None:
@@ -1041,7 +1060,7 @@ def start_ft_sae(dev, apdev, wpa_ptk_rekey=None, sae_pwe=None,
         params['ft_rsnxe_used'] = '1'
     hapd1 = hostapd.add_ap(apdev[1], params)
     key_mgmt = hapd1.get_config()['key_mgmt']
-    if key_mgmt.split(' ')[0] != "FT-SAE":
+    if key_mgmt.split(' ')[0] != "FT-SAE" and not sae_transition:
         raise Exception("Unexpected GET_CONFIG(key_mgmt): " + key_mgmt)
 
     dev.request("SET sae_groups ")
@@ -1051,6 +1070,12 @@ def test_ap_ft_sae(dev, apdev):
     """WPA2-PSK-FT-SAE AP"""
     hapd0, hapd1 = start_ft_sae(dev[0], apdev)
     run_roams(dev[0], apdev, hapd0, hapd1, "test-ft", "12345678", sae=True)
+
+def test_ap_ft_sae_transition(dev, apdev):
+    """WPA2-PSK-FT-SAE/PSK AP"""
+    hapd0, hapd1 = start_ft_sae(dev[0], apdev, sae_transition=True)
+    run_roams(dev[0], apdev, hapd0, hapd1, "test-ft", "12345678",
+              sae_transition=True)
 
 def test_ap_ft_sae_h2e(dev, apdev):
     """WPA2-PSK-FT-SAE AP (H2E)"""
@@ -1595,7 +1620,14 @@ def test_ap_ft_eap_pull_wildcard_multi_bss(dev, apdev, params):
         f.write("interface=%s\n" % ifname2)
         f.write("bssid=%s\n" % bssid2)
         f.write("ctrl_interface=/var/run/hostapd\n")
+
+        fields = ["ssid", "wpa_passphrase", "nas_identifier", "wpa_key_mgmt",
+                  "wpa", "rsn_pairwise", "auth_server_addr"]
+        for name in fields:
+            f.write("%s=%s\n" % (name, params[name]))
         for name, val in params.items():
+            if name in fields:
+                continue
             f.write("%s=%s\n" % (name, val))
     hapd2 = hostapd.add_bss(apdev[0], ifname2, bssconf)
 
@@ -3183,6 +3215,10 @@ def test_ap_ft_eap_sha384(dev, apdev):
     params["ieee8021x"] = "1"
     params = dict(list(radius.items()) + list(params.items()))
     hapd0 = hostapd.add_ap(apdev[0], params)
+    conf = hapd0.request("GET_CONFIG")
+    if "key_mgmt=FT-EAP-SHA384" not in conf.splitlines():
+        logger.info("GET_CONFIG:\n" + conf)
+        raise Exception("GET_CONFIG did not report correct key_mgmt")
     params = ft_params2(ssid=ssid, passphrase=passphrase)
     params["ieee80211w"] = "2"
     params['wpa_key_mgmt'] = "FT-EAP-SHA384"
@@ -3334,9 +3370,11 @@ def test_ap_ft_r0_key_expiration(dev, apdev):
     passphrase = "12345678"
 
     params = ft_params1(ssid=ssid, passphrase=passphrase)
+    params.pop('r0_key_lifetime', None)
     params['ft_r0_key_lifetime'] = "2"
     hapd0 = hostapd.add_ap(apdev[0], params)
     params = ft_params2(ssid=ssid, passphrase=passphrase)
+    params.pop('r0_key_lifetime', None)
     params['ft_r0_key_lifetime'] = "2"
     hapd1 = hostapd.add_ap(apdev[1], params)
 

@@ -24,8 +24,24 @@ def test_he_open(dev, apdev):
               "he_mu_edca_ac_be_ecwmax": "15"}
     hapd = hostapd.add_ap(apdev[0], params)
     if hapd.get_status_field("ieee80211ax") != "1":
-        raise Exception("STATUS did not indicate ieee80211ac=1")
+        raise Exception("STATUS did not indicate ieee80211ax=1")
     dev[0].connect("he", key_mgmt="NONE", scan_freq="2412")
+    sta = hapd.get_sta(dev[0].own_addr())
+    if "[HE]" not in sta['flags']:
+        raise Exception("Missing STA flag: HE")
+
+def test_he_disabled_on_sta(dev, apdev):
+    """HE AP and HE disabled on STA"""
+    params = {"ssid": "he",
+              "ieee80211ax": "1",
+              "he_bss_color": "42",
+              "he_mu_edca_ac_be_ecwmin": "7",
+              "he_mu_edca_ac_be_ecwmax": "15"}
+    hapd = hostapd.add_ap(apdev[0], params)
+    dev[0].connect("he", key_mgmt="NONE", scan_freq="2412", disable_he="1")
+    sta = hapd.get_sta(dev[0].own_addr())
+    if "[HE]" in sta['flags']:
+        raise Exception("Unexpected STA flag: HE")
 
 def test_he_params(dev, apdev):
     """HE AP parameters"""
@@ -67,12 +83,36 @@ def test_he_params(dev, apdev):
               "he_spr_non_srg_obss_pd_max_offset": "0",
               "he_spr_srg_obss_pd_min_offset": "0",
               "he_spr_srg_obss_pd_max_offset": "0",
+              "he_spr_srg_bss_colors": "1 2 10 63",
+              "he_spr_srg_partial_bssid": "0 1 3 63",
+              "he_6ghz_max_ampdu_len_exp": "7",
+              "he_6ghz_rx_ant_pat": "1",
+              "he_6ghz_tx_ant_pat": "1",
+              "he_6ghz_max_mpdu": "2",
               "he_oper_chwidth": "0",
               "he_oper_centr_freq_seg0_idx": "1",
               "he_oper_centr_freq_seg1_idx": "0"}
     hapd = hostapd.add_ap(apdev[0], params)
     if hapd.get_status_field("ieee80211ax") != "1":
-        raise Exception("STATUS did not indicate ieee80211ac=1")
+        raise Exception("STATUS did not indicate ieee80211ax=1")
+    dev[0].connect("he", key_mgmt="NONE", scan_freq="2412")
+
+def test_he_spr_params(dev, apdev):
+    """HE AP spatial reuse parameters"""
+    params = {"ssid": "he",
+              "ieee80211ax": "1",
+              "he_spr_sr_control": "12",
+              "he_spr_non_srg_obss_pd_max_offset": "1",
+              "he_spr_srg_obss_pd_min_offset": "2",
+              "he_spr_srg_obss_pd_max_offset": "3",
+              "he_spr_srg_bss_colors": "1 2 10 63",
+              "he_spr_srg_partial_bssid": "0 1 3 63",
+              "he_oper_chwidth": "0",
+              "he_oper_centr_freq_seg0_idx": "1",
+              "he_oper_centr_freq_seg1_idx": "0"}
+    hapd = hostapd.add_ap(apdev[0], params)
+    if hapd.get_status_field("ieee80211ax") != "1":
+        raise Exception("STATUS did not indicate ieee80211ax=1")
     dev[0].connect("he", key_mgmt="NONE", scan_freq="2412")
 
 def he_supported():
@@ -154,27 +194,19 @@ def test_he80(dev, apdev):
         dev[0].request("DISCONNECT")
         clear_regdom(hapd, dev)
 
-def test_he_wifi_generation(dev, apdev):
+def _test_he_wifi_generation(dev, apdev, conf, scan_freq):
     """HE and wifi_generation"""
     try:
         hapd = None
         params = {"ssid": "he",
                   "country_code": "FI",
-                  "hw_mode": "a",
-                  "channel": "36",
-                  "ht_capab": "[HT40+]",
                   "ieee80211n": "1",
-                  "ieee80211ac": "1",
-                  "ieee80211ax": "1",
-                  "vht_oper_chwidth": "1",
-                  "vht_capab": "[MAX-MPDU-11454]",
-                  "vht_oper_centr_freq_seg0_idx": "42",
-                  "he_oper_chwidth": "1",
-                  "he_oper_centr_freq_seg0_idx": "42"}
+                  "ieee80211ax": "1"}
+        params.update(conf)
         hapd = hostapd.add_ap(apdev[0], params)
         bssid = apdev[0]['bssid']
 
-        dev[0].connect("he", key_mgmt="NONE", scan_freq="5180")
+        dev[0].connect("he", key_mgmt="NONE", scan_freq=scan_freq)
         status = dev[0].get_status()
         if 'wifi_generation' not in status:
             # For now, assume this is because of missing kernel support
@@ -185,7 +217,7 @@ def test_he_wifi_generation(dev, apdev):
 
         wpas = WpaSupplicant(global_iface='/tmp/wpas-wlan5')
         wpas.interface_add("wlan5", drv_params="force_connect_cmd=1")
-        wpas.connect("he", key_mgmt="NONE", scan_freq="5180")
+        wpas.connect("he", key_mgmt="NONE", scan_freq=scan_freq)
         status = wpas.get_status()
         if 'wifi_generation' not in status:
             # For now, assume this is because of missing kernel support
@@ -201,6 +233,27 @@ def test_he_wifi_generation(dev, apdev):
     finally:
         dev[0].request("DISCONNECT")
         clear_regdom(hapd, dev)
+
+def test_he_wifi_generation(dev, apdev):
+    conf = {
+        "vht_oper_chwidth": "1",
+        "hw_mode": "a",
+        "channel": "36",
+        "ht_capab": "[HT40+]",
+        "vht_oper_centr_freq_seg0_idx": "42",
+        "he_oper_chwidth": "1",
+        "he_oper_centr_freq_seg0_idx": "42",
+        "vht_capab": "[MAX-MPDU-11454]",
+        "ieee80211ac": "1",
+    }
+    _test_he_wifi_generation(dev, apdev, conf, "5180")
+
+def test_he_wifi_generation_24(dev, apdev):
+    conf = {
+        "hw_mode": "g",
+        "channel": "1",
+    }
+    _test_he_wifi_generation(dev, apdev, conf, "2412")
 
 def he80_test(apdev, dev, channel, ht_capab):
     clear_scan_cache(apdev)
@@ -992,7 +1045,7 @@ def test_he_tkip(dev, apdev):
             raise Exception("Unexpected STATUS ieee80211n value")
         if status["ieee80211ac"] != "0":
             raise Exception("Unexpected STATUS ieee80211ac value")
-        if status["ieee80211ax"] != "1":
+        if status["ieee80211ax"] != "0":
             raise Exception("Unexpected STATUS ieee80211ax value")
         if status["secondary_channel"] != "0":
             raise Exception("Unexpected STATUS secondary_channel value")
@@ -1075,3 +1128,61 @@ def test_he80_to_24g_he(dev, apdev):
     finally:
         dev[0].request("DISCONNECT")
         clear_regdom(hapd, dev)
+
+def test_he_twt(dev, apdev):
+    """HE and TWT"""
+    params = {"ssid": "he",
+              "ieee80211ax": "1",
+              "he_bss_color": "42",
+              "he_twt_required":"1"}
+    hapd = hostapd.add_ap(apdev[0], params)
+
+    dev[0].connect("he", key_mgmt="NONE", scan_freq="2412")
+    if "OK" not in dev[0].request("TWT_SETUP"):
+        raise Exception("TWT_SETUP failed")
+    if "OK" not in dev[0].request("TWT_TEARDOWN"):
+        raise Exception("TWT_SETUP failed")
+    if "OK" not in dev[0].request("TWT_SETUP dialog=123 exponent=9 mantissa=10 min_twt=254 setup_cmd=1 twt=1234567890 requestor=1 trigger=0 implicit=0 flow_type=0 flow_id=2 protection=1 twt_channel=3 control=16"):
+        raise Exception("TWT_SETUP failed")
+    if "OK" not in dev[0].request("TWT_TEARDOWN flags=255"):
+        raise Exception("TWT_SETUP failed")
+
+def test_he_6ghz_security(dev, apdev):
+    """HE AP and 6 GHz security parameter validation"""
+    params = {"ssid": "he",
+              "ieee80211ax": "1",
+              "op_class": "131",
+              "channel": "1"}
+    hapd = hostapd.add_ap(apdev[0], params, no_enable=True)
+
+    # Pre-RSNA security methods are not allowed in 6 GHz
+    if "FAIL" not in hapd.request("ENABLE"):
+        raise Exception("Invalid configuration accepted(1)")
+
+    # Management frame protection is required in 6 GHz"
+    hapd.set("wpa", "2")
+    hapd.set("wpa_passphrase", "12345678")
+    hapd.set("wpa_key_mgmt", "SAE")
+    hapd.set("rsn_pairwise", "CCMP")
+    hapd.set("ieee80211w", "1")
+    if "FAIL" not in hapd.request("ENABLE"):
+        raise Exception("Invalid configuration accepted(2)")
+
+    # Invalid AKM suite for 6 GHz
+    hapd.set("ieee80211w", "2")
+    hapd.set("wpa_key_mgmt", "SAE WPA-PSK")
+    if "FAIL" not in hapd.request("ENABLE"):
+        raise Exception("Invalid configuration accepted(3)")
+
+    # Invalid pairwise cipher suite for 6 GHz
+    hapd.set("wpa_key_mgmt", "SAE")
+    hapd.set("rsn_pairwise", "CCMP TKIP")
+    if "FAIL" not in hapd.request("ENABLE"):
+        raise Exception("Invalid configuration accepted(4)")
+
+    # Invalid group cipher suite for 6 GHz
+    hapd.set("wpa_key_mgmt", "SAE")
+    hapd.set("rsn_pairwise", "CCMP")
+    hapd.set("group_cipher", "TKIP")
+    if "FAIL" not in hapd.request("ENABLE"):
+        raise Exception("Invalid configuration accepted(5)")

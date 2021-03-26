@@ -1285,6 +1285,7 @@ void dpp_auth_deinit(struct dpp_authentication *auth)
 		wpabuf_free(conf->certs);
 		wpabuf_free(conf->cacert);
 		os_free(conf->server_name);
+		wpabuf_free(conf->pp_key);
 	}
 #ifdef CONFIG_DPP2
 	dpp_free_asymmetric_key(auth->conf_key_pkg);
@@ -1586,6 +1587,16 @@ skip_groups:
 		wpa_printf(MSG_DEBUG, "DPP: Failed to build csign JWK");
 		goto fail;
 	}
+#ifdef CONFIG_DPP2
+	if (auth->peer_version >= 2 && auth->conf->pp_key) {
+		json_value_sep(buf);
+		if (dpp_build_jwk(buf, "ppKey", auth->conf->pp_key, NULL,
+				  curve) < 0) {
+			wpa_printf(MSG_DEBUG, "DPP: Failed to build ppKey JWK");
+			goto fail;
+		}
+	}
+#endif /* CONFIG_DPP2 */
 
 	json_end_object(buf);
 	json_end_object(buf);
@@ -2418,6 +2429,20 @@ static void dpp_copy_csign(struct dpp_config_obj *conf, EVP_PKEY *csign)
 }
 
 
+static void dpp_copy_ppkey(struct dpp_config_obj *conf, EVP_PKEY *ppkey)
+{
+	unsigned char *der = NULL;
+	int der_len;
+
+	der_len = i2d_PUBKEY(ppkey, &der);
+	if (der_len <= 0)
+		return;
+	wpabuf_free(conf->pp_key);
+	conf->pp_key = wpabuf_alloc_copy(der, der_len);
+	OPENSSL_free(der);
+}
+
+
 static void dpp_copy_netaccesskey(struct dpp_authentication *auth,
 				  struct dpp_config_obj *conf)
 {
@@ -2453,10 +2478,10 @@ static int dpp_parse_cred_dpp(struct dpp_authentication *auth,
 			      struct json_token *cred)
 {
 	struct dpp_signed_connector_info info;
-	struct json_token *token, *csign;
+	struct json_token *token, *csign, *ppkey;
 	int ret = -1;
-	EVP_PKEY *csign_pub = NULL;
-	const struct dpp_curve_params *key_curve = NULL;
+	EVP_PKEY *csign_pub = NULL, *pp_pub = NULL;
+	const struct dpp_curve_params *key_curve = NULL, *pp_curve = NULL;
 	const char *signed_connector;
 
 	os_memset(&info, 0, sizeof(info));
@@ -2482,6 +2507,21 @@ static int dpp_parse_cred_dpp(struct dpp_authentication *auth,
 		goto fail;
 	}
 	dpp_debug_print_key("DPP: Received C-sign-key", csign_pub);
+
+	ppkey = json_get_member(cred, "ppKey");
+	if (ppkey && ppkey->type == JSON_OBJECT) {
+		pp_pub = dpp_parse_jwk(ppkey, &pp_curve);
+		if (!pp_pub) {
+			wpa_printf(MSG_DEBUG, "DPP: Failed to parse ppKey JWK");
+			goto fail;
+		}
+		dpp_debug_print_key("DPP: Received ppKey", pp_pub);
+		if (key_curve != pp_curve) {
+			wpa_printf(MSG_DEBUG,
+				   "DPP: C-sign-key and ppKey do not use the same curve");
+			goto fail;
+		}
+	}
 
 	token = json_get_member(cred, "signedConnector");
 	if (!token || token->type != JSON_STRING) {
@@ -2513,12 +2553,15 @@ static int dpp_parse_cred_dpp(struct dpp_authentication *auth,
 	conf->connector = os_strdup(signed_connector);
 
 	dpp_copy_csign(conf, csign_pub);
+	if (pp_pub)
+		dpp_copy_ppkey(conf, pp_pub);
 	if (dpp_akm_dpp(conf->akm) || auth->peer_version >= 2)
 		dpp_copy_netaccesskey(auth, conf);
 
 	ret = 0;
 fail:
 	EVP_PKEY_free(csign_pub);
+	EVP_PKEY_free(pp_pub);
 	os_free(info.payload);
 	return ret;
 }
@@ -3355,6 +3398,7 @@ void dpp_configurator_free(struct dpp_configurator *conf)
 	os_free(conf->kid);
 	os_free(conf->connector);
 	EVP_PKEY_free(conf->connector_key);
+	EVP_PKEY_free(conf->pp_key);
 	os_free(conf);
 }
 
@@ -3413,9 +3457,9 @@ static int dpp_configurator_gen_kid(struct dpp_configurator *conf)
 }
 
 
-struct dpp_configurator *
+static struct dpp_configurator *
 dpp_keygen_configurator(const char *curve, const u8 *privkey,
-			size_t privkey_len)
+			size_t privkey_len, const u8 *pp_key, size_t pp_key_len)
 {
 	struct dpp_configurator *conf;
 
@@ -3435,7 +3479,12 @@ dpp_keygen_configurator(const char *curve, const u8 *privkey,
 					      privkey_len);
 	else
 		conf->csign = dpp_gen_keypair(conf->curve);
-	if (!conf->csign)
+	if (pp_key)
+		conf->pp_key = dpp_set_keypair(&conf->curve, pp_key,
+					       pp_key_len);
+	else
+		conf->pp_key = dpp_gen_keypair(conf->curve);
+	if (!conf->csign || !conf->pp_key)
 		goto fail;
 	conf->own = 1;
 
@@ -4122,14 +4171,15 @@ static unsigned int dpp_next_configurator_id(struct dpp_global *dpp)
 int dpp_configurator_add(struct dpp_global *dpp, const char *cmd)
 {
 	char *curve = NULL;
-	char *key = NULL;
-	u8 *privkey = NULL;
-	size_t privkey_len = 0;
+	char *key = NULL, *ppkey = NULL;
+	u8 *privkey = NULL, *pp_key = NULL;
+	size_t privkey_len = 0, pp_key_len = 0;
 	int ret = -1;
 	struct dpp_configurator *conf = NULL;
 
 	curve = get_param(cmd, " curve=");
 	key = get_param(cmd, " key=");
+	ppkey = get_param(cmd, " ppkey=");
 
 	if (key) {
 		privkey_len = os_strlen(key) / 2;
@@ -4139,7 +4189,16 @@ int dpp_configurator_add(struct dpp_global *dpp, const char *cmd)
 			goto fail;
 	}
 
-	conf = dpp_keygen_configurator(curve, privkey, privkey_len);
+	if (ppkey) {
+		pp_key_len = os_strlen(ppkey) / 2;
+		pp_key = os_malloc(pp_key_len);
+		if (!pp_key ||
+		    hexstr2bin(ppkey, pp_key, pp_key_len) < 0)
+			goto fail;
+	}
+
+	conf = dpp_keygen_configurator(curve, privkey, privkey_len,
+				       pp_key, pp_key_len);
 	if (!conf)
 		goto fail;
 
@@ -4150,7 +4209,9 @@ int dpp_configurator_add(struct dpp_global *dpp, const char *cmd)
 fail:
 	os_free(curve);
 	str_clear_free(key);
+	str_clear_free(ppkey);
 	bin_clear_free(privkey, privkey_len);
+	bin_clear_free(pp_key, pp_key_len);
 	dpp_configurator_free(conf);
 	return ret;
 }
@@ -4214,12 +4275,12 @@ int dpp_configurator_from_backup(struct dpp_global *dpp,
 				 struct dpp_asymmetric_key *key)
 {
 	struct dpp_configurator *conf;
-	const EC_KEY *eckey;
-	const EC_GROUP *group;
+	const EC_KEY *eckey, *eckey_pp;
+	const EC_GROUP *group, *group_pp;
 	int nid;
 	const struct dpp_curve_params *curve;
 
-	if (!key->csign)
+	if (!key->csign || !key->pp_key)
 		return -1;
 	eckey = EVP_PKEY_get0_EC_KEY(key->csign);
 	if (!eckey)
@@ -4233,6 +4294,18 @@ int dpp_configurator_from_backup(struct dpp_global *dpp,
 		wpa_printf(MSG_INFO, "DPP: Unsupported group in c-sign-key");
 		return -1;
 	}
+	eckey_pp = EVP_PKEY_get0_EC_KEY(key->pp_key);
+	if (!eckey_pp)
+		return -1;
+	group_pp = EC_KEY_get0_group(eckey_pp);
+	if (!group_pp)
+		return -1;
+	if (EC_GROUP_get_curve_name(group) !=
+	    EC_GROUP_get_curve_name(group_pp)) {
+		wpa_printf(MSG_INFO,
+			   "DPP: Mismatch in c-sign-key and ppKey groups");
+		return -1;
+	}
 
 	conf = os_zalloc(sizeof(*conf));
 	if (!conf)
@@ -4240,6 +4313,8 @@ int dpp_configurator_from_backup(struct dpp_global *dpp,
 	conf->curve = curve;
 	conf->csign = key->csign;
 	key->csign = NULL;
+	conf->pp_key = key->pp_key;
+	key->pp_key = NULL;
 	conf->own = 1;
 	if (dpp_configurator_gen_kid(conf) < 0) {
 		dpp_configurator_free(conf);
@@ -4317,6 +4392,7 @@ void dpp_global_deinit(struct dpp_global *dpp)
 
 
 #ifdef CONFIG_DPP2
+
 struct wpabuf * dpp_build_presence_announcement(struct dpp_bootstrap_info *bi)
 {
 	struct wpabuf *msg;
@@ -4333,4 +4409,17 @@ struct wpabuf * dpp_build_presence_announcement(struct dpp_bootstrap_info *bi)
 			"DPP: Presence Announcement frame attributes", msg);
 	return msg;
 }
+
+
+void dpp_notify_chirp_received(void *msg_ctx, int id, const u8 *src,
+				unsigned int freq, const u8 *hash)
+{
+	char hex[SHA256_MAC_LEN * 2 + 1];
+
+	wpa_snprintf_hex(hex, sizeof(hex), hash, SHA256_MAC_LEN);
+	wpa_msg(msg_ctx, MSG_INFO,
+		DPP_EVENT_CHIRP_RX "id=%d src=" MACSTR " freq=%u hash=%s",
+		id, MAC2STR(src), freq, hex);
+}
+
 #endif /* CONFIG_DPP2 */

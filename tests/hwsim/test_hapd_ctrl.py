@@ -856,6 +856,7 @@ def test_hapd_ctrl_ext_io_errors(dev, apdev):
     tests = ["MGMT_TX 1",
              "MGMT_TX 1q",
              "MGMT_RX_PROCESS freq=2412",
+             "MGMT_TX_STATUS_PROCESS style=1 ok=0 buf=12345678",
              "EAPOL_RX foo",
              "EAPOL_RX 00:11:22:33:44:55 1",
              "EAPOL_RX 00:11:22:33:44:55 1q"]
@@ -873,7 +874,10 @@ def test_hapd_ctrl_ext_io_errors(dev, apdev):
     tests = ["MGMT_RX_PROCESS freq=2412",
              "MGMT_RX_PROCESS freq=2412 ssi_signal=0",
              "MGMT_RX_PROCESS freq=2412 frame=1",
-             "MGMT_RX_PROCESS freq=2412 frame=1q"]
+             "MGMT_RX_PROCESS freq=2412 frame=1q",
+             "MGMT_TX_STATUS_PROCESS style=1 ok=0",
+             "MGMT_TX_STATUS_PROCESS style=1 ok=0 buf=1234567",
+             "MGMT_TX_STATUS_PROCESS style=1 ok=0 buf=1234567q"]
     for t in tests:
         if "FAIL" not in hapd.request(t):
             raise Exception("Invalid command accepted: " + t)
@@ -906,6 +910,36 @@ def test_hapd_ctrl_ext_io_errors(dev, apdev):
     with alloc_fail(hapd, 1, "=hostapd_ctrl_iface_data_test_frame"):
         if "FAIL" not in hapd.request("DATA_TEST_FRAME 112233445566778899aabbccddeeff"):
             raise Exception("DATA_TEST_FRAME accepted during OOM")
+
+def test_hapd_ctrl_vendor_test(dev, apdev):
+    """hostapd and VENDOR test command"""
+    ssid = "hapd-ctrl"
+    params = {"ssid": ssid}
+    hapd = hostapd.add_ap(apdev[0], params)
+
+    OUI_QCA = 0x001374
+    QCA_NL80211_VENDOR_SUBCMD_TEST = 1
+    QCA_WLAN_VENDOR_ATTR_TEST = 8
+    attr = struct.pack("@HHI", 4 + 4, QCA_WLAN_VENDOR_ATTR_TEST, 123)
+    cmd = "VENDOR %x %d %s" % (OUI_QCA, QCA_NL80211_VENDOR_SUBCMD_TEST, binascii.hexlify(attr).decode())
+
+    res = hapd.request(cmd)
+    if "FAIL" in res:
+        raise Exception("VENDOR command failed")
+    val, = struct.unpack("@I", binascii.unhexlify(res))
+    if val != 125:
+        raise Exception("Incorrect response value")
+
+    res = hapd.request(cmd + " nested=1")
+    if "FAIL" in res:
+        raise Exception("VENDOR command failed")
+    val, = struct.unpack("@I", binascii.unhexlify(res))
+    if val != 125:
+        raise Exception("Incorrect response value")
+
+    res = hapd.request(cmd + " nested=0")
+    if "FAIL" not in res:
+        raise Exception("VENDOR command with invalid (not nested) data accepted")
 
 def test_hapd_ctrl_vendor_errors(dev, apdev):
     """hostapd and VENDOR errors"""
@@ -980,3 +1014,58 @@ def test_hapd_ctrl_test_fail(dev, apdev):
         raise Exception("TEST_ALLOC_FAIL clearing failed")
     if "OK" not in hapd.request("TEST_FAIL "):
         raise Exception("TEST_FAIL clearing failed")
+
+def test_hapd_ctrl_setband(dev, apdev):
+    """hostapd and setband"""
+    ssid = "hapd-ctrl"
+    params = {"ssid": ssid}
+    hapd = hostapd.add_ap(apdev[0], params)
+    # The actual setband driver operations are not supported without vendor
+    # commands, so only check minimal parsing items here.
+    if "FAIL" not in hapd.request("SET setband foo"):
+        raise Exception("Invalid setband value accepted")
+    vals = ["5G", "6G", "2G", "2G,6G", "2G,5G,6G", "AUTO"]
+    for val in vals:
+        if "OK" not in hapd.request("SET setband " + val):
+            raise Exception("SET setband %s failed" % val)
+
+def test_hapd_ctrl_get_capability(dev, apdev):
+    """hostapd GET_CAPABILITY"""
+    ssid = "hapd-ctrl"
+    params = {"ssid": ssid}
+    hapd = hostapd.add_ap(apdev[0], params)
+    if "FAIL" not in hapd.request("GET_CAPABILITY "):
+        raise Exception("Invalid GET_CAPABILITY accepted")
+    res = hapd.request("GET_CAPABILITY dpp")
+    logger.info("DPP capability: " + res)
+
+def test_hapd_ctrl_pmksa_add_failures(dev, apdev):
+    """hostapd PMKSA_ADD failures"""
+    ssid = "hapd-ctrl"
+    params = {"ssid": ssid}
+    hapd = hostapd.add_ap(apdev[0], params)
+    tests = ["q",
+             "22:22:22:22:22:22",
+             "22:22:22:22:22:22 q",
+             "22:22:22:22:22:22 " + 16*'00',
+             "22:22:22:22:22:22 " + 16*"00" + " " + 10*"00",
+             "22:22:22:22:22:22 " + 16*"00" + " q",
+             "22:22:22:22:22:22 " + 16*"00" + " " + 200*"00",
+             "22:22:22:22:22:22 " + 16*"00" + " " + 32*"00" + " 12345",
+             "22:22:22:22:22:22 " + 16*"00" + " " + 32*"00" + " 12345 1",
+             ""]
+    for t in tests:
+        if "FAIL" not in hapd.request("PMKSA_ADD " + t):
+            raise Exception("Invalid PMKSA_ADD accepted: " + t)
+
+def test_hapd_ctrl_attach_errors(dev, apdev):
+    """hostapd ATTACH errors"""
+    params = {"ssid": "hapd-ctrl"}
+    hapd = hostapd.add_ap(apdev[0], params)
+    hglobal = hostapd.HostapdGlobal(apdev[0])
+    with alloc_fail(hapd, 1, "ctrl_iface_attach"):
+        if "FAIL" not in hapd.request("ATTACH foo"):
+            raise Exception("Invalid ATTACH accepted")
+    with alloc_fail(hapd, 1, "ctrl_iface_attach"):
+        if "FAIL" not in hglobal.request("ATTACH foo"):
+            raise Exception("Invalid ATTACH accepted")

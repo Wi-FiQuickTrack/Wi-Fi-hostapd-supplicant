@@ -1,6 +1,6 @@
 /*
  * hostapd / Initialization and configuration
- * Copyright (c) 2002-2019, Jouni Malinen <j@w1.fi>
+ * Copyright (c) 2002-2021, Jouni Malinen <j@w1.fi>
  *
  * This software may be distributed under the terms of the BSD license.
  * See README for more details.
@@ -354,7 +354,7 @@ static int hostapd_broadcast_wep_set(struct hostapd_data *hapd)
 #endif /* CONFIG_WEP */
 
 
-static void hostapd_free_hapd_data(struct hostapd_data *hapd)
+void hostapd_free_hapd_data(struct hostapd_data *hapd)
 {
 	os_free(hapd->probereq_cb);
 	hapd->probereq_cb = NULL;
@@ -392,6 +392,7 @@ static void hostapd_free_hapd_data(struct hostapd_data *hapd)
 #ifdef CONFIG_DPP
 	hostapd_dpp_deinit(hapd);
 	gas_query_ap_deinit(hapd->gas);
+	hapd->gas = NULL;
 #endif /* CONFIG_DPP */
 
 	authsrv_deinit(hapd);
@@ -414,6 +415,7 @@ static void hostapd_free_hapd_data(struct hostapd_data *hapd)
 	}
 
 	wpabuf_free(hapd->time_adv);
+	hapd->time_adv = NULL;
 
 #ifdef CONFIG_INTERWORKING
 	gas_serv_deinit(hapd);
@@ -429,11 +431,14 @@ static void hostapd_free_hapd_data(struct hostapd_data *hapd)
 		       hapd->tmp_eap_user.identity_len);
 	bin_clear_free(hapd->tmp_eap_user.password,
 		       hapd->tmp_eap_user.password_len);
+	os_memset(&hapd->tmp_eap_user, 0, sizeof(hapd->tmp_eap_user));
 #endif /* CONFIG_SQLITE */
 
 #ifdef CONFIG_MESH
 	wpabuf_free(hapd->mesh_pending_auth);
 	hapd->mesh_pending_auth = NULL;
+	/* handling setup failure is already done */
+	hapd->setup_complete_cb = NULL;
 #endif /* CONFIG_MESH */
 
 	hostapd_clean_rrm(hapd);
@@ -496,7 +501,7 @@ static void sta_track_deinit(struct hostapd_iface *iface)
 }
 
 
-static void hostapd_cleanup_iface_partial(struct hostapd_iface *iface)
+void hostapd_cleanup_iface_partial(struct hostapd_iface *iface)
 {
 	wpa_printf(MSG_DEBUG, "%s(%p)", __func__, iface);
 #ifdef NEED_AP_MLME
@@ -624,7 +629,7 @@ static int hostapd_flush_old_stations(struct hostapd_data *hapd, u16 reason)
 }
 
 
-static void hostapd_bss_deinit_no_free(struct hostapd_data *hapd)
+void hostapd_bss_deinit_no_free(struct hostapd_data *hapd)
 {
 	hostapd_free_stas(hapd);
 	hostapd_flush_old_stations(hapd, WLAN_REASON_DEAUTH_LEAVING);
@@ -1701,6 +1706,9 @@ static int setup_interface2(struct hostapd_iface *iface)
 		ret = hostapd_check_edmg_capab(iface);
 		if (ret < 0)
 			goto fail;
+		ret = hostapd_check_he_6ghz_capab(iface);
+		if (ret < 0)
+			goto fail;
 		ret = hostapd_check_ht_capab(iface);
 		if (ret < 0)
 			goto fail;
@@ -2156,6 +2164,13 @@ dfs_offload:
 	if (hapd->setup_complete_cb)
 		hapd->setup_complete_cb(hapd->setup_complete_cb_ctx);
 
+#ifdef CONFIG_MESH
+	if (delay_apply_cfg && !iface->mconf) {
+		wpa_printf(MSG_ERROR, "Error while completing mesh init");
+		goto fail;
+	}
+#endif /* CONFIG_MESH */
+
 	wpa_printf(MSG_DEBUG, "%s: Setup of interface done.",
 		   iface->bss[0]->conf->iface);
 	if (iface->interfaces && iface->interfaces->terminate_on_error > 0)
@@ -2296,10 +2311,12 @@ int hostapd_setup_interface(struct hostapd_iface *iface)
 {
 	int ret;
 
+	if (!iface->conf)
+		return -1;
 	ret = setup_interface(iface);
 	if (ret) {
 		wpa_printf(MSG_ERROR, "%s: Unable to setup interface.",
-			   iface->bss[0]->conf->iface);
+			   iface->conf->bss[0]->iface);
 		return -1;
 	}
 
@@ -2681,6 +2698,12 @@ int hostapd_enable_iface(struct hostapd_iface *hapd_iface)
 {
 	size_t j;
 
+	if (!hapd_iface)
+		return -1;
+
+	if (hapd_iface->enable_iface_cb)
+		return hapd_iface->enable_iface_cb(hapd_iface);
+
 	if (hapd_iface->bss[0]->drv_priv != NULL) {
 		wpa_printf(MSG_ERROR, "Interface %s already enabled",
 			   hapd_iface->conf->bss[0]->iface);
@@ -2741,6 +2764,9 @@ int hostapd_disable_iface(struct hostapd_iface *hapd_iface)
 
 	if (hapd_iface == NULL)
 		return -1;
+
+	if (hapd_iface->disable_iface_cb)
+		return hapd_iface->disable_iface_cb(hapd_iface);
 
 	if (hapd_iface->bss[0]->drv_priv == NULL) {
 		wpa_printf(MSG_INFO, "Interface %s already disabled",
@@ -3539,15 +3565,23 @@ void hostapd_cleanup_cs_params(struct hostapd_data *hapd)
 }
 
 
-void hostapd_chan_switch_vht_config(struct hostapd_data *hapd, int vht_enabled)
+void hostapd_chan_switch_config(struct hostapd_data *hapd,
+				struct hostapd_freq_params *freq_params)
 {
-	if (vht_enabled)
+	if (freq_params->he_enabled)
+		hapd->iconf->ch_switch_he_config |= CH_SWITCH_HE_ENABLED;
+	else
+		hapd->iconf->ch_switch_he_config |= CH_SWITCH_HE_DISABLED;
+
+	if (freq_params->vht_enabled)
 		hapd->iconf->ch_switch_vht_config |= CH_SWITCH_VHT_ENABLED;
 	else
 		hapd->iconf->ch_switch_vht_config |= CH_SWITCH_VHT_DISABLED;
 
 	hostapd_logger(hapd, NULL, HOSTAPD_MODULE_IEEE80211,
-		       HOSTAPD_LEVEL_INFO, "CHAN_SWITCH VHT CONFIG 0x%x",
+		       HOSTAPD_LEVEL_INFO,
+		       "CHAN_SWITCH HE config 0x%x VHT config 0x%x",
+		       hapd->iconf->ch_switch_he_config,
 		       hapd->iconf->ch_switch_vht_config);
 }
 

@@ -726,6 +726,8 @@ def test_ap_wps_random_ap_pin(dev, apdev):
         raise Exception("Invalid WPS_AP_PIN accepted")
     if "FAIL" not in hapd.request("WPS_AP_PIN foo"):
         raise Exception("Invalid WPS_AP_PIN accepted")
+    if "FAIL" not in hapd.request("WPS_AP_PIN set " + 9*'1'):
+        raise Exception("Invalid WPS_AP_PIN accepted")
 
 def test_ap_wps_reg_config(dev, apdev):
     """WPS registrar configuring an AP using AP PIN"""
@@ -1052,6 +1054,11 @@ def test_ap_wps_pbc_overlap_2sta(dev, apdev):
         raise Exception("PBC session overlap not correctly reported (dev1)")
     dev[1].request("WPS_CANCEL")
     dev[1].request("DISCONNECT")
+    ev = hapd.wait_event(["WPS-OVERLAP-DETECTED"], timeout=1)
+    if ev is None:
+        raise Exception("PBC session overlap not detected (AP)")
+    if "PBC Status: Overlap" not in hapd.request("WPS_GET_STATUS"):
+        raise Exception("PBC status not shown correctly")
     hapd.request("WPS_CANCEL")
     ret = hapd.request("WPS_PBC")
     if "FAIL" not in ret:
@@ -10446,6 +10453,10 @@ def run_ap_wps_ap_timeout(dev, apdev, cmd):
     ev = hapd.wait_event(["WPS-TIMEOUT"], timeout=130)
     if ev is None and "PBC" in cmd:
         raise Exception("WPS-TIMEOUT not reported")
+    if "PBC" in cmd and \
+       "PBC Status: Timed-out" not in hapd.request("WPS_GET_STATUS"):
+        raise Exception("PBC status not shown correctly")
+
     time.sleep(5)
     dev[0].flush_scan_cache()
     dev[0].scan_for_bss(bssid, freq="2412", force_scan=True)

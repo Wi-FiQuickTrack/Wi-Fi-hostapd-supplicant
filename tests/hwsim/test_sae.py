@@ -52,6 +52,15 @@ def test_sae(dev, apdev):
     pmk_w = dev[0].get_pmk(id)
     if pmk_h != pmk_w:
         raise Exception("Fetched PMK does not match: hostapd %s, wpa_supplicant %s" % (pmk_h, pmk_w))
+    dev[0].request("DISCONNECT")
+    dev[0].wait_disconnected()
+    pmk_h2 = hapd.request("GET_PMK " + dev[0].own_addr())
+    if pmk_h != pmk_h2:
+        raise Exception("Fetched PMK from PMKSA cache does not match: %s, %s" % (pmk_h, pmk_h2))
+    if "FAIL" not in hapd.request("GET_PMK foo"):
+        raise Exception("Invalid GET_PMK did not return failure")
+    if "FAIL" not in hapd.request("GET_PMK 02:ff:ff:ff:ff:ff"):
+        raise Exception("GET_PMK for unknown STA did not return failure")
 
 @remote_compatible
 def test_sae_password_ecc(dev, apdev):
@@ -1076,6 +1085,47 @@ def test_sae_proto_hostapd_ffc(dev, apdev):
     # Unexpected continuation of the connection attempt with confirm
     hapd.request("MGMT_RX_PROCESS freq=2412 datarate=0 ssi_signal=-30 frame=" + hdr + "030002000000" + "0000" + "fd7b081ff4e8676f03612a4140eedcd3c179ab3a13b93863c6f7ca451340b9ae")
 
+def sae_start_ap(apdev, sae_pwe):
+    params = hostapd.wpa2_params(ssid="test-sae", passphrase="foofoofoo")
+    params['wpa_key_mgmt'] = 'SAE'
+    params['sae_groups'] = "19"
+    params['sae_pwe'] = str(sae_pwe)
+    return hostapd.add_ap(apdev, params)
+
+def check_commit_status(hapd, use_status, expect_status):
+    hapd.set("ext_mgmt_frame_handling", "1")
+    bssid = hapd.own_addr().replace(':', '')
+    addr = "020000000000"
+    addr2 = "020000000001"
+    hdr = "b0003a01" + bssid + addr + bssid + "1000"
+    hdr2 = "b0003a01" + bssid + addr2 + bssid + "1000"
+    group = "1300"
+    scalar = "033d3635b39666ed427fd4a3e7d37acec2810afeaf1687f746a14163ff0e6d03"
+    element_x = "559cb8928db4ce4e3cbd6555e837591995e5ebe503ef36b503d9ca519d63728d"
+    element_y = "d3c7c676b8e8081831b6bc3a64bdf136061a7de175e17d1965bfa41983ed02f8"
+    status = binascii.hexlify(struct.pack('<H', use_status)).decode()
+    hapd.request("MGMT_RX_PROCESS freq=2412 datarate=0 ssi_signal=-30 frame=" + hdr + "03000100" + status + group + scalar + element_x + element_y)
+    ev = hapd.wait_event(["MGMT-TX-STATUS"], timeout=5)
+    if ev is None:
+        raise Exception("MGMT-TX-STATUS not seen")
+    msg = ev.split(' ')[3].split('=')[1]
+    body = msg[2 * 24:]
+    status, = struct.unpack('<H', binascii.unhexlify(body[8:12]))
+    if status != expect_status:
+        raise Exception("Unexpected status code: %d" % status)
+
+def test_sae_proto_hostapd_status_126(dev, apdev):
+    """SAE protocol testing with hostapd (status code 126)"""
+    hapd = sae_start_ap(apdev[0], 0)
+    check_commit_status(hapd, 126, 1)
+    check_commit_status(hapd, 0, 0)
+
+def test_sae_proto_hostapd_status_127(dev, apdev):
+    """SAE protocol testing with hostapd (status code 127)"""
+    hapd = sae_start_ap(apdev[0], 2)
+    check_commit_status(hapd, 127, 1)
+    check_commit_status(hapd, 0, 0)
+
 @remote_compatible
 def test_sae_no_ffc_by_default(dev, apdev):
     """SAE and default groups rejecting FFC"""
@@ -1669,7 +1719,7 @@ def test_sae_password_id_only(dev, apdev):
                    key_mgmt="SAE", scan_freq="2412")
 
 def test_sae_password_id_pwe_looping(dev, apdev):
-    """SAE and password identifier with forced PWE looping)"""
+    """SAE and password identifier with forced PWE looping"""
     check_sae_capab(dev[0])
     params = hostapd.wpa2_params(ssid="test-sae")
     params['wpa_key_mgmt'] = 'SAE'
@@ -1687,7 +1737,7 @@ def test_sae_password_id_pwe_looping(dev, apdev):
         dev[0].set("sae_pwe", "0")
 
 def test_sae_password_id_pwe_check_ap(dev, apdev):
-    """SAE and password identifier with STA using unexpected PWE derivation)"""
+    """SAE and password identifier with STA using unexpected PWE derivation"""
     check_sae_capab(dev[0])
     params = hostapd.wpa2_params(ssid="test-sae")
     params['wpa_key_mgmt'] = 'SAE'
@@ -1708,7 +1758,7 @@ def test_sae_password_id_pwe_check_ap(dev, apdev):
         dev[0].set("sae_pwe", "0")
 
 def test_sae_password_id_pwe_check_sta(dev, apdev):
-    """SAE and password identifier with AP using unexpected PWE derivation)"""
+    """SAE and password identifier with AP using unexpected PWE derivation"""
     check_sae_capab(dev[0])
     params = hostapd.wpa2_params(ssid="test-sae")
     params['wpa_key_mgmt'] = 'SAE'

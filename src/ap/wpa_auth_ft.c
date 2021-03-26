@@ -1473,13 +1473,13 @@ static int wpa_ft_store_pmk_r1(struct wpa_authenticator *wpa_auth,
 }
 
 
-static int wpa_ft_fetch_pmk_r1(struct wpa_authenticator *wpa_auth,
-			       const u8 *spa, const u8 *pmk_r1_name,
-			       u8 *pmk_r1, size_t *pmk_r1_len, int *pairwise,
-			       struct vlan_description *vlan,
-			       const u8 **identity, size_t *identity_len,
-			       const u8 **radius_cui, size_t *radius_cui_len,
-			       int *session_timeout)
+int wpa_ft_fetch_pmk_r1(struct wpa_authenticator *wpa_auth,
+			const u8 *spa, const u8 *pmk_r1_name,
+			u8 *pmk_r1, size_t *pmk_r1_len, int *pairwise,
+			struct vlan_description *vlan,
+			const u8 **identity, size_t *identity_len,
+			const u8 **radius_cui, size_t *radius_cui_len,
+			int *session_timeout)
 {
 	struct wpa_ft_pmk_cache *cache = wpa_auth->ft_pmk_cache;
 	struct wpa_ft_pmk_r1_sa *r1;
@@ -2147,7 +2147,8 @@ int wpa_auth_derive_ptk_ft(struct wpa_state_machine *sm, struct wpa_ptk *ptk)
 
 	return wpa_pmk_r1_to_ptk(pmk_r1, pmk_r1_len, sm->SNonce, sm->ANonce,
 				 sm->addr, sm->wpa_auth->addr, sm->pmk_r1_name,
-				 ptk, ptk_name, sm->wpa_key_mgmt, sm->pairwise);
+				 ptk, ptk_name, sm->wpa_key_mgmt, sm->pairwise,
+				 0);
 }
 
 
@@ -3065,7 +3066,7 @@ static int wpa_ft_process_auth_req(struct wpa_state_machine *sm,
 	const u8 *identity, *radius_cui;
 	size_t identity_len = 0, radius_cui_len = 0;
 	int use_sha384;
-	size_t pmk_r1_len;
+	size_t pmk_r1_len, kdk_len;
 
 	*resp_ies = NULL;
 	*resp_ies_len = 0;
@@ -3195,10 +3196,18 @@ pmk_r1_derived:
 	wpa_hexdump(MSG_DEBUG, "FT: Generated ANonce",
 		    sm->ANonce, WPA_NONCE_LEN);
 
+	if (sm->wpa_auth->conf.force_kdk_derivation ||
+	    (sm->wpa_auth->conf.secure_ltf &&
+	     sm->rsnxe && sm->rsnxe_len >= 4 &&
+	     sm->rsnxe[3] & BIT(WLAN_RSNX_CAPAB_SECURE_LTF - 8)))
+		kdk_len = WPA_KDK_MAX_LEN;
+	else
+		kdk_len = 0;
+
 	if (wpa_pmk_r1_to_ptk(pmk_r1, pmk_r1_len, sm->SNonce, sm->ANonce,
 			      sm->addr, sm->wpa_auth->addr, pmk_r1_name,
 			      &sm->PTK, ptk_name, sm->wpa_key_mgmt,
-			      pairwise) < 0)
+			      pairwise, kdk_len) < 0)
 		return WLAN_STATUS_UNSPECIFIED_FAILURE;
 
 	sm->pairwise = pairwise;
@@ -3505,6 +3514,7 @@ int wpa_ft_validate_reassoc(struct wpa_state_machine *sm, const u8 *ies,
 		struct wpa_channel_info ci;
 		int tx_chanwidth;
 		int tx_seg1_idx;
+		enum oci_verify_result res;
 
 		if (wpa_channel_info(sm->wpa_auth, &ci) != 0) {
 			wpa_printf(MSG_WARNING,
@@ -3518,15 +3528,21 @@ int wpa_ft_validate_reassoc(struct wpa_state_machine *sm, const u8 *ies,
 					  &tx_seg1_idx) < 0)
 			return WLAN_STATUS_UNSPECIFIED_FAILURE;
 
-		if (ocv_verify_tx_params(parse.oci, parse.oci_len, &ci,
-					 tx_chanwidth, tx_seg1_idx) != 0) {
+		res = ocv_verify_tx_params(parse.oci, parse.oci_len, &ci,
+					   tx_chanwidth, tx_seg1_idx);
+		if (wpa_auth_uses_ocv(sm) == 2 && res == OCI_NOT_FOUND) {
+			/* Work around misbehaving STAs */
+			wpa_printf(MSG_INFO,
+				   "Disable OCV with a STA that does not send OCI");
+			wpa_auth_set_ocv(sm, 0);
+		} else if (res != OCI_SUCCESS) {
 			wpa_printf(MSG_WARNING, "OCV failed: %s", ocv_errorstr);
 			if (sm->wpa_auth->conf.msg_ctx)
 				wpa_msg(sm->wpa_auth->conf.msg_ctx, MSG_INFO,
 					OCV_FAILURE "addr=" MACSTR
 					" frame=ft-reassoc-req error=%s",
 					MAC2STR(sm->addr), ocv_errorstr);
-			return WLAN_STATUS_UNSPECIFIED_FAILURE;
+			return WLAN_STATUS_INVALID_FTIE;
 		}
 	}
 #endif /* CONFIG_OCV */

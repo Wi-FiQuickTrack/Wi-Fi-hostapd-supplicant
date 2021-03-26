@@ -713,6 +713,8 @@ static struct crypto_ec_point * sswu(struct crypto_ec *ec, int group,
 		goto fail;
 	const_time_select_bin(m_is_zero, bin1, bin2, prime_len, bin);
 	x1 = crypto_bignum_init_set(bin, prime_len);
+	if (!x1)
+		goto fail;
 	debug_print_bignum("SSWU: x1 = CSEL(l, x1a, x1b)", x1, prime_len);
 
 	/* gx1 = x1^3 + a * x1 + b */
@@ -753,6 +755,8 @@ static struct crypto_ec_point * sswu(struct crypto_ec *ec, int group,
 		goto fail;
 	const_time_select_bin(is_qr, bin1, bin2, prime_len, bin);
 	v = crypto_bignum_init_set(bin, prime_len);
+	if (!v)
+		goto fail;
 	debug_print_bignum("SSWU: v = CSEL(l, gx1, gx2)", v, prime_len);
 
 	/* x = CSEL(l, x1, x2) */
@@ -1605,18 +1609,26 @@ static int sae_derive_keys(struct sae_data *sae, const u8 *k)
 	 * octets). */
 	crypto_bignum_to_bin(tmp, val, sizeof(val), sae->tmp->order_len);
 	wpa_hexdump(MSG_DEBUG, "SAE: PMKID", val, SAE_PMKID_LEN);
-	if (!sae->pk &&
-	    sae_kdf_hash(hash_len, keyseed, "SAE KCK and PMK",
+
+#ifdef CONFIG_SAE_PK
+	if (sae->pk) {
+		if (sae_kdf_hash(hash_len, keyseed, "SAE-PK keys",
+				 val, sae->tmp->order_len,
+				 keys, 2 * hash_len + SAE_PMK_LEN) < 0)
+			goto fail;
+	} else {
+		if (sae_kdf_hash(hash_len, keyseed, "SAE KCK and PMK",
+				 val, sae->tmp->order_len,
+				 keys, hash_len + SAE_PMK_LEN) < 0)
+			goto fail;
+	}
+#else /* CONFIG_SAE_PK */
+	if (sae_kdf_hash(hash_len, keyseed, "SAE KCK and PMK",
 			 val, sae->tmp->order_len,
 			 keys, hash_len + SAE_PMK_LEN) < 0)
 		goto fail;
-#ifdef CONFIG_SAE_PK
-	if (sae->pk &&
-	    sae_kdf_hash(hash_len, keyseed, "SAE-PK keys",
-			 val, sae->tmp->order_len,
-			 keys, 2 * hash_len + SAE_PMK_LEN) < 0)
-		goto fail;
-#endif /* CONFIG_SAE_PK */
+#endif /* !CONFIG_SAE_PK */
+
 	forced_memzero(keyseed, sizeof(keyseed));
 	os_memcpy(sae->tmp->kck, keys, hash_len);
 	sae->tmp->kck_len = hash_len;
@@ -2011,6 +2023,9 @@ static u16 sae_parse_commit_element(struct sae_data *sae, const u8 **pos,
 static int sae_parse_password_identifier(struct sae_data *sae,
 					 const u8 **pos, const u8 *end)
 {
+	const u8 *epos;
+	u8 len;
+
 	wpa_hexdump(MSG_DEBUG, "SAE: Possible elements at the end of the frame",
 		    *pos, end - *pos);
 	if (!sae_is_password_id_elem(*pos, end)) {
@@ -2025,9 +2040,17 @@ static int sae_parse_password_identifier(struct sae_data *sae,
 		return WLAN_STATUS_SUCCESS; /* No Password Identifier */
 	}
 
+	epos = *pos;
+	epos++; /* skip IE type */
+	len = *epos++; /* IE length */
+	if (len > end - epos || len < 1)
+		return WLAN_STATUS_UNSPECIFIED_FAILURE;
+	epos++; /* skip ext ID */
+	len--;
+
 	if (sae->tmp->pw_id &&
-	    ((*pos)[1] - 1 != (int) os_strlen(sae->tmp->pw_id) ||
-	     os_memcmp(sae->tmp->pw_id, (*pos) + 3, (*pos)[1] - 1) != 0)) {
+	    (len != os_strlen(sae->tmp->pw_id) ||
+	     os_memcmp(sae->tmp->pw_id, epos, len) != 0)) {
 		wpa_printf(MSG_DEBUG,
 			   "SAE: The included Password Identifier does not match the expected one (%s)",
 			   sae->tmp->pw_id);
@@ -2035,14 +2058,14 @@ static int sae_parse_password_identifier(struct sae_data *sae,
 	}
 
 	os_free(sae->tmp->pw_id);
-	sae->tmp->pw_id = os_malloc((*pos)[1]);
+	sae->tmp->pw_id = os_malloc(len + 1);
 	if (!sae->tmp->pw_id)
 		return WLAN_STATUS_UNSPECIFIED_FAILURE;
-	os_memcpy(sae->tmp->pw_id, (*pos) + 3, (*pos)[1] - 1);
-	sae->tmp->pw_id[(*pos)[1] - 1] = '\0';
+	os_memcpy(sae->tmp->pw_id, epos, len);
+	sae->tmp->pw_id[len] = '\0';
 	wpa_hexdump_ascii(MSG_DEBUG, "SAE: Received Password Identifier",
-			  sae->tmp->pw_id, (*pos)[1] -  1);
-	*pos = *pos + 2 + (*pos)[1];
+			  sae->tmp->pw_id, len);
+	*pos = epos + len;
 	return WLAN_STATUS_SUCCESS;
 }
 
@@ -2050,19 +2073,30 @@ static int sae_parse_password_identifier(struct sae_data *sae,
 static int sae_parse_rejected_groups(struct sae_data *sae,
 				     const u8 **pos, const u8 *end)
 {
+	const u8 *epos;
+	u8 len;
+
 	wpa_hexdump(MSG_DEBUG, "SAE: Possible elements at the end of the frame",
 		    *pos, end - *pos);
 	if (!sae_is_rejected_groups_elem(*pos, end))
 		return WLAN_STATUS_SUCCESS;
+
+	epos = *pos;
+	epos++; /* skip IE type */
+	len = *epos++; /* IE length */
+	if (len > end - epos || len < 1)
+		return WLAN_STATUS_UNSPECIFIED_FAILURE;
+	epos++; /* skip ext ID */
+	len--;
+
 	wpabuf_free(sae->tmp->peer_rejected_groups);
-	sae->tmp->peer_rejected_groups = wpabuf_alloc((*pos)[1] - 1);
+	sae->tmp->peer_rejected_groups = wpabuf_alloc(len);
 	if (!sae->tmp->peer_rejected_groups)
 		return WLAN_STATUS_UNSPECIFIED_FAILURE;
-	wpabuf_put_data(sae->tmp->peer_rejected_groups, (*pos) + 3,
-			(*pos)[1] - 1);
+	wpabuf_put_data(sae->tmp->peer_rejected_groups, epos, len);
 	wpa_hexdump_buf(MSG_DEBUG, "SAE: Received Rejected Groups list",
 			sae->tmp->peer_rejected_groups);
-	*pos = *pos + 2 + (*pos)[1];
+	*pos = epos + len;
 	return WLAN_STATUS_SUCCESS;
 }
 

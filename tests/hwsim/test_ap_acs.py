@@ -284,6 +284,30 @@ def test_ap_acs_vht40(dev, apdev):
     finally:
         clear_regdom(hapd, dev)
 
+def test_ap_acs_vht80p80(dev, apdev):
+    """Automatic channel selection for VHT 80+80"""
+    try:
+        hapd = None
+        force_prev_ap_on_5g(apdev[0])
+        params = hostapd.wpa2_params(ssid="test-acs", passphrase="12345678")
+        params['hw_mode'] = 'a'
+        params['channel'] = '0'
+        params['ht_capab'] = '[HT40+]'
+        params['country_code'] = 'US'
+        params['ieee80211ac'] = '1'
+        params['vht_oper_chwidth'] = '3'
+        hapd = hostapd.add_ap(apdev[0], params, wait_enabled=False)
+        ev = hapd.wait_event(["ACS-COMPLETED"], timeout=20)
+        if ev is None:
+            raise Exception("ACS did not complete")
+        # ACS for 80+80 is not yet supported, so the AP setup itself will fail.
+        # Do not try to connection before this gets fully supported.
+        ev = hapd.wait_event(["AP-ENABLED", "AP-DISABLED"], timeout=10)
+        if ev is None:
+            raise Exception("AP enabled/disabled not reported")
+    finally:
+        clear_regdom(hapd, dev)
+
 def test_ap_acs_vht160(dev, apdev):
     """Automatic channel selection for VHT160"""
     try:
@@ -622,3 +646,43 @@ def test_ap_acs_rx_during(dev, apdev):
     finally:
         for i in range(3):
             dev[i].request("SCAN_INTERVAL 5")
+
+def test_ap_acs_he_24g(dev, apdev):
+    """Automatic channel selection on 2.4 GHz with HE"""
+    clear_scan_cache(apdev[0])
+    force_prev_ap_on_24g(apdev[0])
+
+    params = hostapd.wpa2_params(ssid="test-acs", passphrase="12345678")
+    params['channel'] = '0'
+    params['ieee80211ax'] = '1'
+    params['ht_capab'] = '[HT40+]'
+    hapd = hostapd.add_ap(apdev[0], params, wait_enabled=False)
+    wait_acs(hapd)
+
+    freq = hapd.get_status_field("freq")
+    if int(freq) < 2400:
+        raise Exception("Unexpected frequency")
+
+    dev[0].connect("test-acs", psk="12345678", scan_freq=freq)
+
+def test_ap_acs_he_24g_overlap(dev, apdev):
+    """Automatic channel selection on 2.4 GHz with HE (overlap)"""
+    clear_scan_cache(apdev[0])
+    force_prev_ap_on_24g(apdev[0])
+
+    params = {"ssid": "overlapping",
+              "channel": "6", "ieee80211n": "1"}
+    hostapd.add_ap(apdev[1], params)
+
+    params = hostapd.wpa2_params(ssid="test-acs", passphrase="12345678")
+    params['channel'] = '0'
+    params['ieee80211ax'] = '1'
+    params['ht_capab'] = '[HT40+]'
+    hapd = hostapd.add_ap(apdev[0], params, wait_enabled=False)
+    wait_acs(hapd)
+
+    freq = hapd.get_status_field("freq")
+    if int(freq) < 2400:
+        raise Exception("Unexpected frequency")
+
+    dev[0].connect("test-acs", psk="12345678", scan_freq=freq)
