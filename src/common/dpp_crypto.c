@@ -19,6 +19,7 @@
 #include "utils/json.h"
 #include "common/ieee802_11_defs.h"
 #include "crypto/crypto.h"
+#include "crypto/random.h"
 #include "crypto/sha384.h"
 #include "crypto/sha512.h"
 #include "dpp.h"
@@ -2269,6 +2270,7 @@ int dpp_reconfig_derive_ke_responder(struct dpp_authentication *auth,
 	u8 prk[DPP_MAX_HASH_LEN];
 	const struct dpp_curve_params *curve;
 	int res = -1;
+	u8 nonces[2 * DPP_MAX_NONCE_LEN];
 
 	own_key = dpp_set_keypair(&auth->curve, net_access_key,
 				  net_access_key_len);
@@ -2293,16 +2295,25 @@ int dpp_reconfig_derive_ke_responder(struct dpp_authentication *auth,
 	if (!auth->own_protocol_key)
 		goto fail;
 
+	if (random_get_bytes(auth->e_nonce, auth->curve->nonce_len)) {
+		wpa_printf(MSG_ERROR, "DPP: Failed to generate E-nonce");
+		goto fail;
+	}
+	wpa_hexdump_key(MSG_DEBUG, "DPP: E-nonce",
+			auth->e_nonce, auth->curve->nonce_len);
+
 	/* M = { cR + pR } * CI */
 	cR = EVP_PKEY_get0_EC_KEY(own_key);
 	pR = EVP_PKEY_get0_EC_KEY(auth->own_protocol_key);
+	if (!pR)
+		goto fail;
 	group = EC_KEY_get0_group(pR);
 	bnctx = BN_CTX_new();
 	sum = BN_new();
 	mx = BN_new();
 	q = BN_new();
 	m = EC_POINT_new(group);
-	if (!cR || !pR || !bnctx || !sum || !mx || !q || !m)
+	if (!cR || !bnctx || !sum || !mx || !q || !m)
 		goto fail;
 	cR_bn = EC_KEY_get0_private_key(cR);
 	pR_bn = EC_KEY_get0_private_key(pR);
@@ -2325,10 +2336,12 @@ int dpp_reconfig_derive_ke_responder(struct dpp_authentication *auth,
 		goto fail;
 	wpa_hexdump_key(MSG_DEBUG, "DPP: M.x", Mx, curve->prime_len);
 
-	/* ke = HKDF(I-nonce, "dpp reconfig key", M.x) */
+	/* ke = HKDF(C-nonce | E-nonce, "dpp reconfig key", M.x) */
 
-	/* HKDF-Extract(I-nonce, M.x) */
-	if (dpp_hmac(curve->hash_len, auth->i_nonce, curve->nonce_len,
+	/* HKDF-Extract(C-nonce | E-nonce, M.x) */
+	os_memcpy(nonces, auth->c_nonce, curve->nonce_len);
+	os_memcpy(&nonces[curve->nonce_len], auth->e_nonce, curve->nonce_len);
+	if (dpp_hmac(curve->hash_len, nonces, 2 * curve->nonce_len,
 		     Mx, curve->prime_len, prk) < 0)
 		goto fail;
 	wpa_hexdump_key(MSG_DEBUG, "DPP: PRK", prk, curve->hash_len);
@@ -2338,7 +2351,7 @@ int dpp_reconfig_derive_ke_responder(struct dpp_authentication *auth,
 			    "dpp reconfig key", auth->ke, curve->hash_len) < 0)
 		goto fail;
 	wpa_hexdump_key(MSG_DEBUG,
-			"DPP: ke = HKDF(I-nonce, \"dpp reconfig key\", M.x)",
+			"DPP: ke = HKDF(C-nonce | E-nonce, \"dpp reconfig key\", M.x)",
 			auth->ke, curve->hash_len);
 
 	res = 0;
@@ -2375,6 +2388,7 @@ int dpp_reconfig_derive_ke_initiator(struct dpp_authentication *auth,
 	u8 prk[DPP_MAX_HASH_LEN];
 	int res = -1;
 	const struct dpp_curve_params *curve;
+	u8 nonces[2 * DPP_MAX_NONCE_LEN];
 
 	pr = dpp_set_pubkey_point(auth->conf->connector_key,
 				  r_proto, r_proto_len);
@@ -2420,10 +2434,12 @@ int dpp_reconfig_derive_ke_initiator(struct dpp_authentication *auth,
 
 	wpa_hexdump_key(MSG_DEBUG, "DPP: M.x", Mx, curve->prime_len);
 
-	/* ke = HKDF(I-nonce, "dpp reconfig key", M.x) */
+	/* ke = HKDF(C-nonce | E-nonce, "dpp reconfig key", M.x) */
 
-	/* HKDF-Extract(I-nonce, M.x) */
-	if (dpp_hmac(curve->hash_len, auth->i_nonce, curve->nonce_len,
+	/* HKDF-Extract(C-nonce | E-nonce, M.x) */
+	os_memcpy(nonces, auth->c_nonce, curve->nonce_len);
+	os_memcpy(&nonces[curve->nonce_len], auth->e_nonce, curve->nonce_len);
+	if (dpp_hmac(curve->hash_len, nonces, 2 * curve->nonce_len,
 		     Mx, curve->prime_len, prk) < 0)
 		goto fail;
 	wpa_hexdump_key(MSG_DEBUG, "DPP: PRK", prk, curve->hash_len);
@@ -2433,7 +2449,7 @@ int dpp_reconfig_derive_ke_initiator(struct dpp_authentication *auth,
 			    "dpp reconfig key", auth->ke, curve->hash_len) < 0)
 		goto fail;
 	wpa_hexdump_key(MSG_DEBUG,
-			"DPP: ke = HKDF(I-nonce, \"dpp reconfig key\", M.x)",
+			"DPP: ke = HKDF(C-nonce | E-nonce, \"dpp reconfig key\", M.x)",
 			auth->ke, curve->hash_len);
 
 	res = 0;
@@ -2852,6 +2868,7 @@ struct wpabuf * dpp_pkcs7_certs(const struct wpabuf *pkcs7)
 	res = BIO_read(out, wpabuf_put(pem, 0), rlen);
 	if (res <= 0) {
 		wpabuf_free(pem);
+		pem = NULL;
 		goto fail;
 	}
 	wpabuf_put(pem, res);
@@ -2990,10 +3007,12 @@ fail:
 
 
 struct dpp_reconfig_id * dpp_gen_reconfig_id(const u8 *csign_key,
-					     size_t csign_key_len)
+					     size_t csign_key_len,
+					     const u8 *pp_key,
+					     size_t pp_key_len)
 {
 	const unsigned char *p;
-	EVP_PKEY *csign = NULL;
+	EVP_PKEY *csign = NULL, *ppkey = NULL;
 	struct dpp_reconfig_id *id = NULL;
 	BN_CTX *ctx = NULL;
 	BIGNUM *bn = NULL, *q = NULL;
@@ -3004,6 +3023,13 @@ struct dpp_reconfig_id * dpp_gen_reconfig_id(const u8 *csign_key,
 	p = csign_key;
 	csign = d2i_PUBKEY(NULL, &p, csign_key_len);
 	if (!csign)
+		goto fail;
+
+	if (!pp_key)
+		goto fail;
+	p = pp_key;
+	ppkey = d2i_PUBKEY(NULL, &p, pp_key_len);
+	if (!ppkey)
 		goto fail;
 
 	eckey = EVP_PKEY_get0_EC_KEY(csign);
@@ -3033,9 +3059,12 @@ struct dpp_reconfig_id * dpp_gen_reconfig_id(const u8 *csign_key,
 	e_id = NULL;
 	id->csign = csign;
 	csign = NULL;
+	id->pp_key = ppkey;
+	ppkey = NULL;
 fail:
 	EC_POINT_free(e_id);
 	EVP_PKEY_free(csign);
+	EVP_PKEY_free(ppkey);
 	BN_clear_free(bn);
 	BN_CTX_free(ctx);
 	return id;
@@ -3079,13 +3108,13 @@ int dpp_update_reconfig_id(struct dpp_reconfig_id *id)
 	BIGNUM *bn = NULL, *q = NULL;
 	EC_POINT *e_prime_id = NULL, *a_nonce = NULL;
 	int ret = -1;
-	const EC_KEY *csign;
-	const EC_POINT *csign_point;
+	const EC_KEY *pp;
+	const EC_POINT *pp_point;
 
-	csign = EVP_PKEY_get0_EC_KEY(id->csign);
-	if (!csign)
+	pp = EVP_PKEY_get0_EC_KEY(id->pp_key);
+	if (!pp)
 		goto fail;
-	csign_point = EC_KEY_get0_public_key(csign);
+	pp_point = EC_KEY_get0_public_key(pp);
 	e_prime_id = EC_POINT_new(id->group);
 	a_nonce = EC_POINT_new(id->group);
 	ctx = BN_CTX_new();
@@ -3093,12 +3122,12 @@ int dpp_update_reconfig_id(struct dpp_reconfig_id *id)
 	q = BN_new();
 	/* Generate random 0 <= a-nonce < q
 	 * A-NONCE = a-nonce * G
-	 * E'-id = E-id + a-nonce * S_C */
-	if (!csign_point || !e_prime_id || !a_nonce || !ctx || !bn || !q ||
+	 * E'-id = E-id + a-nonce * P_pk */
+	if (!pp_point || !e_prime_id || !a_nonce || !ctx || !bn || !q ||
 	    !EC_GROUP_get_order(id->group, q, ctx) ||
 	    !BN_rand_range(bn, q) || /* bn = a-nonce */
 	    !EC_POINT_mul(id->group, a_nonce, bn, NULL, NULL, ctx) ||
-	    !EC_POINT_mul(id->group, e_prime_id, NULL, csign_point, bn, ctx) ||
+	    !EC_POINT_mul(id->group, e_prime_id, NULL, pp_point, bn, ctx) ||
 	    !EC_POINT_add(id->group, e_prime_id, id->e_id, e_prime_id, ctx))
 		goto fail;
 
@@ -3131,37 +3160,41 @@ void dpp_free_reconfig_id(struct dpp_reconfig_id *id)
 		EVP_PKEY_free(id->csign);
 		EVP_PKEY_free(id->a_nonce);
 		EVP_PKEY_free(id->e_prime_id);
+		EVP_PKEY_free(id->pp_key);
 		os_free(id);
 	}
 }
 
 
-EC_POINT * dpp_decrypt_e_id(EVP_PKEY *csign, EVP_PKEY *a_nonce,
+EC_POINT * dpp_decrypt_e_id(EVP_PKEY *ppkey, EVP_PKEY *a_nonce,
 			    EVP_PKEY *e_prime_id)
 {
-	const EC_KEY *csign_ec, *a_nonce_ec, *e_prime_id_ec;
-	const BIGNUM *csign_bn;
+	const EC_KEY *pp_ec, *a_nonce_ec, *e_prime_id_ec;
+	const BIGNUM *pp_bn;
 	const EC_GROUP *group;
 	EC_POINT *e_id = NULL;
 	const EC_POINT *a_nonce_point, *e_prime_id_point;
 	BN_CTX *ctx = NULL;
 
+	if (!ppkey)
+		return NULL;
+
 	/* E-id = E'-id - s_C * A-NONCE */
-	csign_ec = EVP_PKEY_get0_EC_KEY(csign);
+	pp_ec = EVP_PKEY_get0_EC_KEY(ppkey);
 	a_nonce_ec = EVP_PKEY_get0_EC_KEY(a_nonce);
 	e_prime_id_ec = EVP_PKEY_get0_EC_KEY(e_prime_id);
-	if (!csign_ec || !a_nonce_ec || !e_prime_id_ec)
+	if (!pp_ec || !a_nonce_ec || !e_prime_id_ec)
 		return NULL;
-	csign_bn = EC_KEY_get0_private_key(csign_ec);
-	group = EC_KEY_get0_group(csign_ec);
+	pp_bn = EC_KEY_get0_private_key(pp_ec);
+	group = EC_KEY_get0_group(pp_ec);
 	a_nonce_point = EC_KEY_get0_public_key(a_nonce_ec);
 	e_prime_id_point = EC_KEY_get0_public_key(e_prime_id_ec);
 	ctx = BN_CTX_new();
-	if (!csign_bn || !group || !a_nonce_point || !e_prime_id_point || !ctx)
+	if (!pp_bn || !group || !a_nonce_point || !e_prime_id_point || !ctx)
 		goto fail;
 	e_id = EC_POINT_new(group);
 	if (!e_id ||
-	    !EC_POINT_mul(group, e_id, NULL, a_nonce_point, csign_bn, ctx) ||
+	    !EC_POINT_mul(group, e_id, NULL, a_nonce_point, pp_bn, ctx) ||
 	    !EC_POINT_invert(group, e_id, ctx) ||
 	    !EC_POINT_add(group, e_id, e_prime_id_point, e_id, ctx)) {
 		EC_POINT_clear_free(e_id);

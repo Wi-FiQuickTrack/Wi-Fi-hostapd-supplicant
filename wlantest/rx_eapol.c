@@ -120,7 +120,7 @@ static int try_pmk(struct wlantest *wt, struct wlantest_bss *bss,
 				      sta->snonce, sta->anonce, sta->addr,
 				      bss->bssid, sta->pmk_r1_name,
 				      &ptk, ptk_name, sta->key_mgmt,
-				      sta->pairwise_cipher) < 0 ||
+				      sta->pairwise_cipher, 0) < 0 ||
 		    check_mic(ptk.kck, ptk.kck_len, sta->key_mgmt, ver, data,
 			      len) < 0)
 			return -1;
@@ -128,7 +128,7 @@ static int try_pmk(struct wlantest *wt, struct wlantest_bss *bss,
 				  "Pairwise key expansion",
 				  bss->bssid, sta->addr, sta->anonce,
 				  sta->snonce, &ptk, sta->key_mgmt,
-				  sta->pairwise_cipher, NULL, 0) < 0 ||
+				  sta->pairwise_cipher, NULL, 0, 0) < 0 ||
 		   check_mic(ptk.kck, ptk.kck_len, sta->key_mgmt, ver, data,
 			     len) < 0) {
 		return -1;
@@ -725,7 +725,6 @@ static void rx_data_eapol_key_3_of_4(struct wlantest *wt, const u8 *dst,
 		if (p && p > decrypted && p + 1 == decrypted + decrypted_len &&
 		    *p == 0xdd) {
 			/* Remove padding */
-			p--;
 			plain_len = p - decrypted;
 		}
 
@@ -1057,7 +1056,10 @@ static void rx_data_eapol_key(struct wlantest *wt, const u8 *bssid,
 
 	bss = bss_get(wt, bssid);
 	if (bss) {
-		sta = sta_get(bss, sta_addr);
+		if (sta_addr)
+			sta = sta_get(bss, sta_addr);
+		else
+			sta = NULL;
 		if (sta)
 			mic_len = wpa_mic_len(sta->key_mgmt, PMK_LEN);
 	}

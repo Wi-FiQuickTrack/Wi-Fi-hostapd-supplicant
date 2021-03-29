@@ -201,7 +201,13 @@ def test_ap_acl_mgmt(dev, apdev):
     if "01:01:01:01:01:01 VLAN_ID=0" not in deny:
         raise Exception("Missing deny entry")
 
+    if "OK" not in hapd.request("ACCEPT_ACL DEL_MAC 22:33:44:55:66:77"):
+        raise Exception("DEL_MAC with empty list failed")
+    if "FAIL" not in hapd.request("ACCEPT_ACL ADD_MAC 22:33:44:55:66"):
+        raise Exception("ADD_MAC with invalid MAC address accepted")
     hapd.request("ACCEPT_ACL ADD_MAC 22:33:44:55:66:77")
+    if "FAIL" not in hapd.request("ACCEPT_ACL DEL_MAC 22:33:44:55:66"):
+        raise Exception("DEL_MAC with invalid MAC address accepted")
     hapd.request("DENY_ACL ADD_MAC 22:33:44:55:66:88 VLAN_ID=2")
 
     accept = hapd.request("ACCEPT_ACL SHOW").splitlines()
@@ -253,6 +259,29 @@ def test_ap_acl_mgmt(dev, apdev):
     dev[0].request("DISCONNECT")
     if filename.startswith('/tmp/'):
         os.unlink(filename)
+
+def test_ap_acl_accept_changes(dev, apdev):
+    """MAC ACL accept list changes"""
+    ssid = "acl"
+    params = {}
+    params['ssid'] = ssid
+    params['macaddr_acl'] = "1"
+    hapd = hostapd.add_ap(apdev[0], params)
+    hapd.request("ACCEPT_ACL ADD_MAC " + dev[0].own_addr())
+    hapd.request("ACCEPT_ACL ADD_MAC " + dev[1].own_addr())
+    dev[0].scan_for_bss(apdev[0]['bssid'], freq="2412")
+    dev[0].connect(ssid, key_mgmt="NONE", scan_freq="2412")
+    dev[1].scan_for_bss(apdev[0]['bssid'], freq="2412")
+    dev[1].connect(ssid, key_mgmt="NONE", scan_freq="2412")
+    hapd.request("ACCEPT_ACL DEL_MAC " + dev[0].own_addr())
+    dev[0].wait_disconnected()
+    dev[0].request("DISCONNECT")
+    ev = dev[1].wait_event(["CTRL-EVENT-DISCONNECTED"], timeout=0.1)
+    if ev is not None:
+        raise Exception("Unexpected disconnection")
+    hapd.request("ACCEPT_ACL CLEAR")
+    dev[1].wait_disconnected()
+    dev[1].request("DISCONNECT")
 
 @remote_compatible
 def test_ap_wds_sta(dev, apdev):
@@ -591,6 +620,17 @@ def test_ap_tx_queue_params_invalid(dev, apdev):
     if "FAIL" not in hapd.request('SET wmm_ac_bk_cwmax 3'):
         raise Exception("AC cwMax < cwMin accepted")
 
+    hapd.request("SET tx_queue_data2_cwmax 1023")
+    hapd.set("wmm_ac_bk_cwmax", "10")
+    # Invalid IEs to cause WMM parameter update failing
+    hapd.set("vendor_elements", "dd04112233")
+    hapd.set("wmm_ac_be_cwmin", "3")
+    # Valid IEs to cause WMM parameter update succeeding
+    hapd.set("vendor_elements", "dd0411223344")
+    hapd.set("wmm_ac_be_cwmin", "3")
+
+    dev[0].connect(ssid, key_mgmt="NONE", scan_freq="2412")
+
 def test_ap_beacon_rate_legacy(dev, apdev):
     """Open AP with Beacon frame TX rate 5.5 Mbps"""
     hapd = hostapd.add_ap(apdev[0], {'ssid': 'beacon-rate'})
@@ -843,3 +883,90 @@ def test_ap_wowlan_triggers(dev, apdev):
     dev[0].scan_for_bss(bssid, freq="2412")
     dev[0].connect(ssid, key_mgmt="NONE", scan_freq="2412")
     hwsim_utils.test_connectivity(dev[0], hapd)
+
+def test_ap_notify_mgmt_frames(dev, apdev):
+    """hostapd notify_mgmt_frames configuration enabled"""
+    ssid = "mgmt_frames"
+    params = {'ssid': ssid, 'notify_mgmt_frames': "1"}
+    hapd = hostapd.add_ap(apdev[0], params)
+    bssid = hapd.own_addr()
+    dev[0].scan_for_bss(bssid, freq="2412")
+    dev[0].connect(ssid, key_mgmt="NONE", scan_freq="2412")
+    ev = hapd.wait_event(["AP-MGMT-FRAME-RECEIVED"], timeout=5)
+    if ev is None:
+        raise Exception("AP-MGMT-FRAME-RECEIVED wait timed out")
+    if "buf=b0" not in ev:
+        raise Exception("Expected auth request in AP-MGMT-FRAME-RECEIVED")
+
+def test_ap_notify_mgmt_frames_disabled(dev, apdev):
+    """hostapd notify_mgmt_frames configuration disabled"""
+    ssid = "mgmt_frames"
+    params = {'ssid': ssid, 'notify_mgmt_frames': "0"}
+    hapd = hostapd.add_ap(apdev[0], params)
+    bssid = hapd.own_addr()
+    dev[0].scan_for_bss(bssid, freq="2412")
+    dev[0].connect(ssid, key_mgmt="NONE", scan_freq="2412")
+    ev = hapd.wait_event(["AP-MGMT-FRAME-RECEIVED"], timeout=0.1)
+    if ev is not None:
+        raise Exception("Unexpected AP-MGMT-FRAME-RECEIVED")
+
+def test_ap_airtime_policy_static(dev, apdev):
+    """Airtime policy - static"""
+    ssid = "test-wpa2-psk"
+    passphrase = 'qwertyuiop'
+    params = hostapd.wpa2_params(ssid=ssid, passphrase=passphrase)
+    params['airtime_mode'] = "1"
+    params['airtime_update_interval'] = "200"
+    params['airtime_sta_weight'] = dev[0].own_addr() + " 512"
+    hapd = hostapd.add_ap(apdev[0], params)
+    dev[0].connect(ssid, psk=passphrase, scan_freq="2412")
+    dev[1].connect(ssid, psk=passphrase, scan_freq="2412")
+    time.sleep(1)
+
+def test_ap_airtime_policy_per_bss_dynamic(dev, apdev):
+    """Airtime policy - per-BSS dynamic"""
+    ssid = "test-wpa2-psk"
+    passphrase = 'qwertyuiop'
+    params = hostapd.wpa2_params(ssid=ssid, passphrase=passphrase)
+    params['airtime_mode'] = "2"
+    params['airtime_update_interval'] = "200"
+    params['airtime_bss_weight'] = "2"
+    hapd = hostapd.add_ap(apdev[0], params)
+    dev[0].connect(ssid, psk=passphrase, scan_freq="2412")
+    dev[1].connect(ssid, psk=passphrase, scan_freq="2412")
+    time.sleep(1)
+
+def test_ap_airtime_policy_per_bss_limit(dev, apdev):
+    """Airtime policy - per-BSS limit"""
+    ssid = "test-wpa2-psk"
+    passphrase = 'qwertyuiop'
+    params = hostapd.wpa2_params(ssid=ssid, passphrase=passphrase)
+    params['airtime_mode'] = "3"
+    params['airtime_update_interval'] = "200"
+    params['airtime_bss_weight'] = "2"
+    params['airtime_bss_limit'] = "1"
+    hapd = hostapd.add_ap(apdev[0], params)
+    dev[0].connect(ssid, psk=passphrase, scan_freq="2412")
+    dev[1].connect(ssid, psk=passphrase, scan_freq="2412")
+    time.sleep(1)
+    hapd.set("force_backlog_bytes", "1")
+    time.sleep(1)
+
+def test_ap_airtime_policy_per_bss_limit_invalid(dev, apdev):
+    """Airtime policy - per-BSS limit (invalid)"""
+    ssid = "test-wpa2-psk"
+    passphrase = 'qwertyuiop'
+    params = hostapd.wpa2_params(ssid=ssid, passphrase=passphrase)
+    params['airtime_mode'] = "3"
+    params['airtime_update_interval'] = "0"
+    params['airtime_bss_weight'] = "2"
+    params['airtime_bss_limit'] = "1"
+    hapd = hostapd.add_ap(apdev[0], params, no_enable=True)
+    if "FAIL" not in hapd.request("ENABLE"):
+        raise Exception("Invalid airtime policy configuration accepted")
+    hapd.set("airtime_update_interval", "200")
+    hapd.enable()
+    hapd.set("airtime_update_interval", "0")
+    dev[0].connect(ssid, psk=passphrase, scan_freq="2412")
+    dev[1].connect(ssid, psk=passphrase, scan_freq="2412")
+    time.sleep(1)

@@ -48,18 +48,13 @@ void wpas_populate_mscs_descriptor_ie(struct robust_av_data *robust_av,
 int wpas_send_mscs_req(struct wpa_supplicant *wpa_s)
 {
 	struct wpabuf *buf;
-	const u8 *ext_capab = NULL;
 	size_t buf_len;
 	int ret;
 
 	if (wpa_s->wpa_state != WPA_COMPLETED || !wpa_s->current_ssid)
 		return 0;
 
-	if (wpa_s->current_bss)
-		ext_capab = wpa_bss_get_ie(wpa_s->current_bss,
-					   WLAN_EID_EXT_CAPAB);
-
-	if (!ext_capab || ext_capab[1] < 11 || !(ext_capab[12] & 0x20)) {
+	if (!wpa_bss_ext_capab(wpa_s->current_bss, WLAN_EXT_CAPAB_MSCS)) {
 		wpa_dbg(wpa_s, MSG_INFO,
 			"AP does not support MSCS - could not send MSCS Req");
 		return -1;
@@ -94,7 +89,7 @@ int wpas_send_mscs_req(struct wpa_supplicant *wpa_s)
 	/* MSCS descriptor element */
 	wpas_populate_mscs_descriptor_ie(&wpa_s->robust_av, buf);
 
-	wpa_hexdump_buf(MSG_MSGDUMP, "MSCS Request", wpabuf_head(buf));
+	wpa_hexdump_buf(MSG_MSGDUMP, "MSCS Request", buf);
 	ret = wpa_drv_send_action(wpa_s, wpa_s->assoc_freq, 0, wpa_s->bssid,
 				  wpa_s->own_addr, wpa_s->bssid,
 				  wpabuf_head(buf), wpabuf_len(buf), 0);
@@ -123,7 +118,7 @@ void wpas_handle_robust_av_recv_action(struct wpa_supplicant *wpa_s,
 		return;
 	}
 
-	status_code = *buf;
+	status_code = WPA_GET_LE16(buf);
 	wpa_msg(wpa_s, MSG_INFO, WPA_EVENT_MSCS_RESULT "bssid=" MACSTR
 		" status_code=%u", MAC2STR(src), status_code);
 	wpa_s->mscs_setup_done = status_code == WLAN_STATUS_SUCCESS;
@@ -142,10 +137,13 @@ void wpas_handle_assoc_resp_mscs(struct wpa_supplicant *wpa_s, const u8 *bssid,
 		return;
 
 	mscs_desc_ie = get_ie_ext(ies, ies_len, WLAN_EID_EXT_MSCS_DESCRIPTOR);
-	if (!mscs_desc_ie || mscs_desc_ie[1] < 1)
+	if (!mscs_desc_ie || mscs_desc_ie[1] <= 8)
 		return;
 
-	mscs_status = get_ie(mscs_desc_ie, mscs_desc_ie[1],
+	/* Subelements start after (ie_id(1) + ie_len(1) + ext_id(1) +
+	 * request type(1) + upc(2) + stream timeout(4) =) 10.
+	 */
+	mscs_status = get_ie(&mscs_desc_ie[10], mscs_desc_ie[1] - 8,
 			     MCSC_SUBELEM_STATUS);
 	if (!mscs_status || mscs_status[1] < 2)
 		return;

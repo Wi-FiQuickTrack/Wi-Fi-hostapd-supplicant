@@ -178,14 +178,18 @@ void bss_update(struct wlantest *wt, struct wlantest_bss *bss,
 			  elems->osen_len + 2);
 	}
 
-	if (elems->rsn_ie == NULL) {
+	/* S1G does not include RSNE in beacon, so only clear it from
+	 * Probe Response frames. Note this assumes short beacons were dropped
+	 * due to missing SSID above.
+	 */
+	if (!elems->rsn_ie && (!elems->s1g_capab || beacon != 1)) {
 		if (bss->rsnie[0]) {
 			add_note(wt, MSG_INFO, "BSS " MACSTR
 				 " - RSN IE removed", MAC2STR(bss->bssid));
 			bss->rsnie[0] = 0;
 			update = 1;
 		}
-	} else {
+	} else if (elems->rsn_ie) {
 		if (bss->rsnie[0] == 0 ||
 		    os_memcmp(bss->rsnie, elems->rsn_ie - 2,
 			      elems->rsn_ie_len + 2) != 0) {
@@ -222,6 +226,8 @@ void bss_update(struct wlantest *wt, struct wlantest_bss *bss,
 
 	if (elems->mdie)
 		os_memcpy(bss->mdid, elems->mdie, 2);
+
+	bss->mesh = elems->mesh_id != NULL;
 
 	if (!update)
 		return;
@@ -289,8 +295,8 @@ void bss_update(struct wlantest *wt, struct wlantest_bss *bss,
 		   "pairwise=%s%s%s%s%s%s%s"
 		   "group=%s%s%s%s%s%s%s%s%s"
 		   "mgmt_group_cipher=%s%s%s%s%s"
-		   "key_mgmt=%s%s%s%s%s%s%s%s%s"
-		   "rsn_capab=%s%s%s%s%s%s%s",
+		   "key_mgmt=%s%s%s%s%s%s%s%s%s%s%s%s%s%s"
+		   "rsn_capab=%s%s%s%s%s%s%s%s%s%s",
 		   MAC2STR(bss->bssid),
 		   bss->proto == 0 ? "OPEN " : "",
 		   bss->proto & WPA_PROTO_WPA ? "WPA " : "",
@@ -333,7 +339,14 @@ void bss_update(struct wlantest *wt, struct wlantest_bss *bss,
 		   "EAP-SHA256 " : "",
 		   bss->key_mgmt & WPA_KEY_MGMT_PSK_SHA256 ?
 		   "PSK-SHA256 " : "",
+		   bss->key_mgmt & WPA_KEY_MGMT_OWE ? "OWE " : "",
+		   bss->key_mgmt & WPA_KEY_MGMT_PASN ? "PASN " : "",
 		   bss->key_mgmt & WPA_KEY_MGMT_OSEN ? "OSEN " : "",
+		   bss->key_mgmt & WPA_KEY_MGMT_DPP ? "DPP " : "",
+		   bss->key_mgmt & WPA_KEY_MGMT_IEEE8021X_SUITE_B ?
+		   "EAP-SUITE-B " : "",
+		   bss->key_mgmt & WPA_KEY_MGMT_IEEE8021X_SUITE_B_192 ?
+		   "EAP-SUITE-B-192 " : "",
 		   bss->rsn_capab & WPA_CAPABILITY_PREAUTH ? "PREAUTH " : "",
 		   bss->rsn_capab & WPA_CAPABILITY_NO_PAIRWISE ?
 		   "NO_PAIRWISE " : "",
@@ -341,6 +354,11 @@ void bss_update(struct wlantest *wt, struct wlantest_bss *bss,
 		   bss->rsn_capab & WPA_CAPABILITY_MFPC ? "MFPC " : "",
 		   bss->rsn_capab & WPA_CAPABILITY_PEERKEY_ENABLED ?
 		   "PEERKEY " : "",
+		   bss->rsn_capab & WPA_CAPABILITY_SPP_A_MSDU_CAPABLE ?
+		   "SPP-A-MSDU-CAPAB " : "",
+		   bss->rsn_capab & WPA_CAPABILITY_SPP_A_MSDU_REQUIRED ?
+		   "SPP-A-MSDU-REQUIRED " : "",
+		   bss->rsn_capab & WPA_CAPABILITY_PBAC ? "PBAC " : "",
 		   bss->rsn_capab & WPA_CAPABILITY_OCVC ? "OCVC " : "",
 		   bss->rsn_capab & WPA_CAPABILITY_EXT_KEY_ID_FOR_UNICAST ?
 		   "ExtKeyID " : "");

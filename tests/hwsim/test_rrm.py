@@ -90,6 +90,10 @@ def test_rrm_neighbor_db(dev, apdev):
     if "FAIL" not in hapd.request("SET_NEIGHBOR 00:11:22:33:44:55 ssid=test1 nr=" + nr):
         raise Exception("Set neighbor succeeded unexpectedly")
 
+    # Bad SSID end
+    if "FAIL" not in hapd.request("SET_NEIGHBOR 00:11:22:33:44:55 ssid=\"test1 nr=" + nr):
+        raise Exception("Set neighbor succeeded unexpectedly")
+
     # No SSID
     if "FAIL" not in hapd.request("SET_NEIGHBOR 00:11:22:33:44:55 nr=" + nr):
         raise Exception("Set neighbor succeeded unexpectedly")
@@ -207,6 +211,27 @@ def test_rrm_neighbor_db(dev, apdev):
         raise Exception("Unexpected SHOW_NEIGHBOR output(5): " + res)
     if apdev[0]['bssid'] not in res:
         raise Exception("Own BSS not visible in SHOW_NEIGHBOR output")
+
+def test_rrm_neighbor_db_failures(dev, apdev):
+    """hostapd ctrl_iface SET_NEIGHBOR failures"""
+    params = {"ssid": "test", "rrm_neighbor_report": "1"}
+    hapd = hostapd.add_ap(apdev[0]['ifname'], params)
+    cmd = "SET_NEIGHBOR 00:11:22:33:44:55 ssid=\"test1\" nr=" + nr + " lci=" + lci + " civic=" + civic
+    tests = [(1, "hostapd_neighbor_add"),
+             (1, "wpabuf_dup;hostapd_neighbor_set"),
+             (2, "wpabuf_dup;hostapd_neighbor_set"),
+             (3, "wpabuf_dup;hostapd_neighbor_set")]
+    for count, func in tests:
+        with alloc_fail(hapd, count, func):
+            if "FAIL" not in hapd.request(cmd):
+                raise Exception("Set neighbor succeeded")
+
+def test_rrm_neighbor_db_disabled(dev, apdev):
+    """hostapd ctrl_iface SHOW_NEIGHBOR while neighbor report disabled"""
+    params = {"ssid": "test"}
+    hapd = hostapd.add_ap(apdev[0]['ifname'], params)
+    if "FAIL" not in hapd.request("SHOW_NEIGHBOR"):
+        raise Exception("SHOW_NEIGHBOR accepted")
 
 def test_rrm_neighbor_rep_req(dev, apdev):
     """wpa_supplicant ctrl_iface NEIGHBOR_REP_REQUEST"""
@@ -811,6 +836,9 @@ def test_rrm_beacon_req_table(dev, apdev):
 
     tests = ["REQ_BEACON ",
              "REQ_BEACON q",
+             "REQ_BEACON 11:22:33:44:55:66",
+             "REQ_BEACON 11:22:33:44:55:66 req_mode=q",
+             "REQ_BEACON 11:22:33:44:55:66 req_mode=11",
              "REQ_BEACON 11:22:33:44:55:66 1",
              "REQ_BEACON 11:22:33:44:55:66 1q",
              "REQ_BEACON 11:22:33:44:55:66 11223344556677889900aabbccddeeff"]
@@ -1116,7 +1144,7 @@ def test_rrm_beacon_req_table_bssid(dev, apdev):
     report = BeaconReport(binascii.unhexlify(fields[4]))
     logger.info("Received beacon report: " + str(report))
     if "bssid=" + bssid2 not in str(report):
-        raise Exception("Report for unexpect BSS")
+        raise Exception("Report for unexpected BSS")
     ev = hapd.wait_event(["BEACON-RESP-RX"], timeout=0.1)
     if ev is not None:
         raise Exception("Unexpected beacon report response")
@@ -1140,7 +1168,7 @@ def test_rrm_beacon_req_table_ssid(dev, apdev):
     report = BeaconReport(binascii.unhexlify(fields[4]))
     logger.info("Received beacon report: " + str(report))
     if "bssid=" + bssid2 not in str(report):
-        raise Exception("Report for unexpect BSS")
+        raise Exception("Report for unexpected BSS")
     ev = hapd.wait_event(["BEACON-RESP-RX"], timeout=0.1)
     if ev is not None:
         raise Exception("Unexpected beacon report response")

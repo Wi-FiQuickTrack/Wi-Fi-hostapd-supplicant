@@ -17,7 +17,7 @@ from tshark import run_tshark
 from wpasupplicant import WpaSupplicant
 from hwsim import HWSimRadio
 from p2p_utils import *
-from utils import clear_regdom_dev
+from utils import *
 
 def set_country(country, dev=None):
     subprocess.call(['iw', 'reg', 'set', country])
@@ -226,6 +226,7 @@ def test_p2p_channel_avoid2(dev):
 def test_p2p_channel_avoid3(dev):
     """P2P and avoid frequencies driver event on 5 GHz"""
     try:
+        dev[0].global_request("SET p2p_pref_chan 128:44")
         set_country("CN", dev[0])
         form(dev[0], dev[1])
         set_country("CN", dev[0])
@@ -251,6 +252,7 @@ def test_p2p_channel_avoid3(dev):
     finally:
         set_country("00")
         dev[0].request("DRIVER_EVENT AVOID_FREQUENCIES")
+        dev[0].global_request("SET p2p_pref_chan ")
         dev[1].flush_scan_cache()
 
 @remote_compatible
@@ -603,7 +605,7 @@ def test_p2p_autogo_pref_chan_not_in_regulatory(dev, apdev):
             raise Exception("Unexpected number of network blocks: " + str(netw))
         id = netw[0]['id']
 
-        set_country("SE", dev[0])
+        set_country("JP", dev[0])
         res = autogo(dev[0], persistent=id)
         if res['freq'] == "5745":
             raise Exception("Unexpected channel selected(2): " + res['freq'])
@@ -950,7 +952,8 @@ def _test_p2p_go_move_scm_peer_supports(dev, apdev):
         dev[0].remove_group()
     finally:
         dev[0].global_request("SET p2p_go_freq_change_policy 2")
-        set_country("00")
+        disable_hapd(hapd)
+        clear_regdom_dev(dev, 1)
 
 def test_p2p_go_move_scm_peer_does_not_support(dev, apdev):
     """No P2P GO move due to SCM operation (peer does not supports)"""
@@ -996,6 +999,7 @@ def _test_p2p_go_move_scm_peer_does_not_support(dev, apdev):
     finally:
         dev[0].global_request("SET p2p_go_freq_change_policy 2")
         dev[1].request("DRIVER_EVENT AVOID_FREQUENCIES")
+        disable_hapd(hapd)
         clear_regdom_dev(dev, 2)
 
 def test_p2p_go_move_scm_multi(dev, apdev):
@@ -1366,3 +1370,15 @@ def test_p2p_channel_drv_pref_autogo(dev):
     res_go = autogo(dev[0])
     if res_go['freq'] != "2417":
         raise Exception("Unexpected operating frequency: " + res_go['freq'])
+
+def test_p2p_channel_disable_6ghz(dev):
+    """P2P with 6 GHz disabled"""
+    try:
+        dev[0].global_request("SET p2p_6ghz_disable 1")
+        dev[1].p2p_listen()
+        dev[0].discover_peer(dev[1].p2p_dev_addr(), social=False)
+
+        autogo(dev[1])
+        connect_cli(dev[1], dev[0])
+    finally:
+        dev[0].global_request("SET p2p_6ghz_disable 0")

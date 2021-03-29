@@ -1045,6 +1045,8 @@ void * tls_init(const struct tls_config *conf)
 	SSL_CTX_set_options(ssl, SSL_OP_NO_SSLv2);
 	SSL_CTX_set_options(ssl, SSL_OP_NO_SSLv3);
 
+	SSL_CTX_set_mode(ssl, SSL_MODE_AUTO_RETRY);
+
 #ifdef SSL_MODE_NO_AUTO_CHAIN
 	/* Number of deployed use cases assume the default OpenSSL behavior of
 	 * auto chaining the local certificate is in use. BoringSSL removed this
@@ -2995,16 +2997,12 @@ static int tls_set_conn_flags(struct tls_connection *conn, unsigned int flags,
 
 		/* Explicit request to enable TLS versions even if needing to
 		 * override systemwide policies. */
-		if (flags & TLS_CONN_ENABLE_TLSv1_0) {
+		if (flags & TLS_CONN_ENABLE_TLSv1_0)
 			version = TLS1_VERSION;
-		} else if (flags & TLS_CONN_ENABLE_TLSv1_1) {
-			if (!(flags & TLS_CONN_DISABLE_TLSv1_0))
-				version = TLS1_1_VERSION;
-		} else if (flags & TLS_CONN_ENABLE_TLSv1_2) {
-			if (!(flags & (TLS_CONN_DISABLE_TLSv1_0 |
-				       TLS_CONN_DISABLE_TLSv1_1)))
-				version = TLS1_2_VERSION;
-		}
+		else if (flags & TLS_CONN_ENABLE_TLSv1_1)
+			version = TLS1_1_VERSION;
+		else if (flags & TLS_CONN_ENABLE_TLSv1_2)
+			version = TLS1_2_VERSION;
 		if (!version) {
 			wpa_printf(MSG_DEBUG,
 				   "OpenSSL: Invalid TLS version configuration");
@@ -3018,6 +3016,18 @@ static int tls_set_conn_flags(struct tls_connection *conn, unsigned int flags,
 		}
 	}
 #endif /* >= 1.1.0 */
+#if OPENSSL_VERSION_NUMBER >= 0x10100000L && \
+	!defined(LIBRESSL_VERSION_NUMBER) && \
+	!defined(OPENSSL_IS_BORINGSSL)
+	if ((flags & (TLS_CONN_ENABLE_TLSv1_0 | TLS_CONN_ENABLE_TLSv1_1)) &&
+	    SSL_get_security_level(ssl) >= 2) {
+		/*
+		 * Need to drop to security level 1 to allow TLS versions older
+		 * than 1.2 to be used when explicitly enabled in configuration.
+		 */
+		SSL_set_security_level(conn->ssl, 1);
+	}
+#endif
 
 #ifdef CONFIG_SUITEB
 #ifdef OPENSSL_IS_BORINGSSL
@@ -4535,10 +4545,18 @@ struct wpabuf * tls_connection_decrypt(void *tls_ctx,
 		return NULL;
 	res = SSL_read(conn->ssl, wpabuf_mhead(buf), wpabuf_size(buf));
 	if (res < 0) {
-		tls_show_errors(MSG_INFO, __func__,
-				"Decryption failed - SSL_read");
-		wpabuf_free(buf);
-		return NULL;
+		int err = SSL_get_error(conn->ssl, res);
+
+		if (err == SSL_ERROR_WANT_READ) {
+			wpa_printf(MSG_DEBUG,
+				   "SSL: SSL_connect - want more data");
+			res = 0;
+		} else {
+			tls_show_errors(MSG_INFO, __func__,
+					"Decryption failed - SSL_read");
+			wpabuf_free(buf);
+			return NULL;
+		}
 	}
 	wpabuf_put(buf, res);
 
@@ -5314,6 +5332,9 @@ static void openssl_debug_dump_certificate(int i, X509 *cert)
 	EVP_PKEY *pkey;
 	ASN1_INTEGER *ser;
 	char serial_num[128];
+
+	if (!cert)
+		return;
 
 	X509_NAME_oneline(X509_get_subject_name(cert), buf, sizeof(buf));
 

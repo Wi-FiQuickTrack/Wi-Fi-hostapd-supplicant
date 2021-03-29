@@ -170,6 +170,7 @@ struct wlantest_bss {
 	u8 r0kh_id[FT_R0KH_ID_MAX_LEN];
 	size_t r0kh_id_len;
 	u8 r1kh_id[FT_R1KH_ID_LEN];
+	bool mesh;
 };
 
 struct wlantest_radius {
@@ -232,6 +233,8 @@ void add_note(struct wlantest *wt, int level, const char *fmt, ...)
 PRINTF_FORMAT(3, 4);
 void clear_notes(struct wlantest *wt);
 size_t notes_len(struct wlantest *wt, size_t hdrlen);
+void write_decrypted_note(struct wlantest *wt, const u8 *decrypted,
+			  const u8 *tk, size_t tk_len, int keyid);
 
 int add_wep(struct wlantest *wt, const char *key);
 int read_cap_file(struct wlantest *wt, const char *fname);

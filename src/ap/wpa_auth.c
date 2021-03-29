@@ -224,6 +224,23 @@ int wpa_auth_for_each_auth(struct wpa_authenticator *wpa_auth,
 }
 
 
+void wpa_auth_store_ptksa(struct wpa_authenticator *wpa_auth,
+			  const u8 *addr, int cipher,
+			  u32 life_time, const struct wpa_ptk *ptk)
+{
+	if (wpa_auth->cb->store_ptksa)
+		wpa_auth->cb->store_ptksa(wpa_auth->cb_ctx, addr, cipher,
+					  life_time, ptk);
+}
+
+
+void wpa_auth_remove_ptksa(struct wpa_authenticator *wpa_auth,
+			   const u8 *addr, int cipher)
+{
+	if (wpa_auth->cb->clear_ptksa)
+		wpa_auth->cb->clear_ptksa(wpa_auth->cb_ctx, addr, cipher);
+}
+
 void wpa_auth_logger(struct wpa_authenticator *wpa_auth, const u8 *addr,
 		     logger_level level, const char *txt)
 {
@@ -1739,6 +1756,9 @@ void wpa_remove_ptk(struct wpa_state_machine *sm)
 {
 	sm->PTK_valid = false;
 	os_memset(&sm->PTK, 0, sizeof(sm->PTK));
+
+	wpa_auth_remove_ptksa(sm->wpa_auth, sm->addr, sm->pairwise);
+
 	if (wpa_auth_set_key(sm->wpa_auth, 0, WPA_ALG_NONE, sm->addr, 0, NULL,
 			     0, KEY_FLAG_PAIRWISE))
 		wpa_printf(MSG_DEBUG,
@@ -2258,8 +2278,16 @@ static int wpa_derive_ptk(struct wpa_state_machine *sm, const u8 *snonce,
 			  struct wpa_ptk *ptk, int force_sha256)
 {
 	const u8 *z = NULL;
-	size_t z_len = 0;
+	size_t z_len = 0, kdk_len;
 	int akmp;
+
+	if (sm->wpa_auth->conf.force_kdk_derivation ||
+	    (sm->wpa_auth->conf.secure_ltf &&
+	     sm->rsnxe && sm->rsnxe_len >= 4 &&
+	     sm->rsnxe[3] & BIT(WLAN_RSNX_CAPAB_SECURE_LTF - 8)))
+		kdk_len = WPA_KDK_MAX_LEN;
+	else
+		kdk_len = 0;
 
 #ifdef CONFIG_IEEE80211R_AP
 	if (wpa_key_mgmt_ft(sm->wpa_key_mgmt)) {
@@ -2272,7 +2300,8 @@ static int wpa_derive_ptk(struct wpa_state_machine *sm, const u8 *snonce,
 						 sm->pmk_r1_name,
 						 ptk, ptk_name,
 						 sm->wpa_key_mgmt,
-						 sm->pairwise);
+						 sm->pairwise,
+						 kdk_len);
 		}
 		return wpa_auth_derive_ptk_ft(sm, ptk);
 	}
@@ -2290,7 +2319,7 @@ static int wpa_derive_ptk(struct wpa_state_machine *sm, const u8 *snonce,
 		akmp |= WPA_KEY_MGMT_PSK_SHA256;
 	return wpa_pmk_to_ptk(pmk, pmk_len, "Pairwise key expansion",
 			      sm->wpa_auth->addr, sm->addr, sm->ANonce, snonce,
-			      ptk, akmp, sm->pairwise, z, z_len);
+			      ptk, akmp, sm->pairwise, z, z_len, kdk_len);
 }
 
 
@@ -2305,13 +2334,21 @@ int fils_auth_pmk_to_ptk(struct wpa_state_machine *sm, const u8 *pmk,
 	size_t ick_len;
 	int res;
 	u8 fils_ft[FILS_FT_MAX_LEN];
-	size_t fils_ft_len = 0;
+	size_t fils_ft_len = 0, kdk_len;
+
+	if (sm->wpa_auth->conf.force_kdk_derivation ||
+	    (sm->wpa_auth->conf.secure_ltf &&
+	     sm->rsnxe && sm->rsnxe_len >= 4 &&
+	     sm->rsnxe[3] & BIT(WLAN_RSNX_CAPAB_SECURE_LTF - 8)))
+		kdk_len = WPA_KDK_MAX_LEN;
+	else
+		kdk_len = 0;
 
 	res = fils_pmk_to_ptk(pmk, pmk_len, sm->addr, sm->wpa_auth->addr,
 			      snonce, anonce, dhss, dhss_len,
 			      &sm->PTK, ick, &ick_len,
 			      sm->wpa_key_mgmt, sm->pairwise,
-			      fils_ft, &fils_ft_len);
+			      fils_ft, &fils_ft_len, kdk_len);
 	if (res < 0)
 		return res;
 	sm->PTK_valid = true;
@@ -2819,6 +2856,9 @@ int fils_set_tk(struct wpa_state_machine *sm)
 	}
 	sm->tk_already_set = true;
 
+	wpa_auth_store_ptksa(sm->wpa_auth, sm->addr, sm->pairwise,
+			     dot11RSNAConfigPMKLifetime, &sm->PTK);
+
 	return 0;
 }
 
@@ -3037,6 +3077,7 @@ SM_STATE(WPA_PTK, PTKCALCNEGOTIATING)
 		struct wpa_channel_info ci;
 		int tx_chanwidth;
 		int tx_seg1_idx;
+		enum oci_verify_result res;
 
 		if (wpa_channel_info(wpa_auth, &ci) != 0) {
 			wpa_auth_logger(wpa_auth, sm->addr, LOGGER_INFO,
@@ -3050,8 +3091,14 @@ SM_STATE(WPA_PTK, PTKCALCNEGOTIATING)
 					  &tx_seg1_idx) < 0)
 			return;
 
-		if (ocv_verify_tx_params(kde.oci, kde.oci_len, &ci,
-					 tx_chanwidth, tx_seg1_idx) != 0) {
+		res = ocv_verify_tx_params(kde.oci, kde.oci_len, &ci,
+					   tx_chanwidth, tx_seg1_idx);
+		if (wpa_auth_uses_ocv(sm) == 2 && res == OCI_NOT_FOUND) {
+			/* Work around misbehaving STAs */
+			wpa_auth_vlogger(wpa_auth, sm->addr, LOGGER_INFO,
+					 "Disable OCV with a STA that does not send OCI");
+			wpa_auth_set_ocv(sm, 0);
+		} else if (res != OCI_SUCCESS) {
 			wpa_auth_vlogger(wpa_auth, sm->addr, LOGGER_INFO,
 					 "OCV failed: %s", ocv_errorstr);
 			if (wpa_auth->conf.msg_ctx)
@@ -3138,7 +3185,7 @@ SM_STATE(WPA_PTK, PTKCALCNEGOTIATING)
 	sm->pending_1_of_4_timeout = 0;
 	eloop_cancel_timeout(wpa_send_eapol_timeout, sm->wpa_auth, sm);
 
-	if (wpa_key_mgmt_wpa_psk(sm->wpa_key_mgmt)) {
+	if (wpa_key_mgmt_wpa_psk(sm->wpa_key_mgmt) && sm->PMK != pmk) {
 		/* PSK may have changed from the previous choice, so update
 		 * state machine data based on whatever PSK was selected here.
 		 */
@@ -3346,6 +3393,8 @@ SM_STATE(WPA_PTK, PTKINITNEGOTIATING)
 	    wpa_ie_len > wpa_ie[1] + 2U && wpa_ie[0] == WLAN_EID_RSN) {
 		/* WPA-only STA, remove RSN IE and possible MDIE */
 		wpa_ie = wpa_ie + wpa_ie[1] + 2;
+		if (wpa_ie[0] == WLAN_EID_RSNX)
+			wpa_ie = wpa_ie + wpa_ie[1] + 2;
 		if (wpa_ie[0] == WLAN_EID_MOBILITY_DOMAIN)
 			wpa_ie = wpa_ie + wpa_ie[1] + 2;
 		wpa_ie_len = wpa_ie[1] + 2;
@@ -3616,6 +3665,8 @@ SM_STATE(WPA_PTK, PTKINITDONE)
 		sm->pairwise_set = true;
 
 		wpa_auth_set_ptk_rekey_timer(sm);
+		wpa_auth_store_ptksa(sm->wpa_auth, sm->addr, sm->pairwise,
+				     dot11RSNAConfigPMKLifetime, &sm->PTK);
 
 		if (wpa_key_mgmt_wpa_psk(sm->wpa_key_mgmt) ||
 		    sm->wpa_key_mgmt == WPA_KEY_MGMT_DPP ||
@@ -3929,7 +3980,8 @@ SM_STATE(WPA_PTK_GROUP, REKEYESTABLISHED)
 			return;
 
 		if (ocv_verify_tx_params(kde.oci, kde.oci_len, &ci,
-					 tx_chanwidth, tx_seg1_idx) != 0) {
+					 tx_chanwidth, tx_seg1_idx) !=
+		    OCI_SUCCESS) {
 			wpa_auth_vlogger(wpa_auth, sm->addr, LOGGER_INFO,
 					 "OCV failed: %s", ocv_errorstr);
 			if (wpa_auth->conf.msg_ctx)
@@ -4795,7 +4847,7 @@ int wpa_auth_pmksa_add2(struct wpa_authenticator *wpa_auth, const u8 *addr,
 			const u8 *pmk, size_t pmk_len, const u8 *pmkid,
 			int session_timeout, int akmp)
 {
-	if (wpa_auth->conf.disable_pmksa_caching)
+	if (!wpa_auth || wpa_auth->conf.disable_pmksa_caching)
 		return -1;
 
 	wpa_hexdump_key(MSG_DEBUG, "RSN: Cache PMK (2)", pmk, PMK_LEN);
@@ -5365,6 +5417,8 @@ int wpa_auth_resend_m3(struct wpa_state_machine *sm,
 	    wpa_ie_len > wpa_ie[1] + 2 && wpa_ie[0] == WLAN_EID_RSN) {
 		/* WPA-only STA, remove RSN IE and possible MDIE */
 		wpa_ie = wpa_ie + wpa_ie[1] + 2;
+		if (wpa_ie[0] == WLAN_EID_RSNX)
+			wpa_ie = wpa_ie + wpa_ie[1] + 2;
 		if (wpa_ie[0] == WLAN_EID_MOBILITY_DOMAIN)
 			wpa_ie = wpa_ie + wpa_ie[1] + 2;
 		wpa_ie_len = wpa_ie[1] + 2;

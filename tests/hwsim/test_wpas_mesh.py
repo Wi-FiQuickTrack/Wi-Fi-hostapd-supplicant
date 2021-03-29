@@ -80,8 +80,24 @@ def check_mesh_scan(dev, params, other_started=False, beacon_int=0):
     if '[MESH]' not in bss['flags']:
         raise Exception("BSS output did not include MESH flag")
 
-def check_mesh_group_added(dev):
-    ev = dev.wait_event(["MESH-GROUP-STARTED"])
+def check_dfs_started(dev, timeout=10):
+    ev = dev.wait_event(["DFS-CAC-START"], timeout=timeout)
+    if ev is None:
+        raise Exception("Test exception: CAC did not start")
+
+def check_dfs_finished(dev, timeout=70):
+    ev = dev.wait_event(["DFS-CAC-COMPLETED"], timeout=timeout)
+    if ev is None:
+        raise Exception("Test exception: CAC did not finish")
+
+def check_mesh_radar_handling_finished(dev, timeout=75):
+    ev = dev.wait_event(["CTRL-EVENT-CHANNEL-SWITCH", "MESH-GROUP-STARTED"],
+                        timeout=timeout)
+    if ev is None:
+        raise Exception("Test exception: Couldn't join mesh")
+
+def check_mesh_group_added(dev, timeout=10):
+    ev = dev.wait_event(["MESH-GROUP-STARTED"], timeout=timeout)
     if ev is None:
         raise Exception("Test exception: Couldn't join mesh")
 
@@ -91,6 +107,10 @@ def check_mesh_group_removed(dev):
     if ev is None:
         raise Exception("Test exception: Couldn't leave mesh")
 
+def check_regdom_change(dev, timeout=10):
+    ev = dev.wait_event(["CTRL-EVENT-REGDOM-CHANGE"], timeout=timeout)
+    if ev is None:
+        raise Exception("Test exception: No regdom change happened.")
 
 def check_mesh_peer_connected(dev, timeout=10):
     ev = dev.wait_event(["MESH-PEER-CONNECTED"], timeout=timeout)
@@ -166,6 +186,39 @@ def test_wpas_mesh_group_remove(dev):
     # Check for MESH-GROUP-REMOVED event
     check_mesh_group_removed(dev[0])
     dev[0].mesh_group_remove()
+
+def dfs_simulate_radar(dev):
+    logger.info("Trigger a simulated radar event")
+    phyname = dev.get_driver_status_field("phyname")
+    radar_file = '/sys/kernel/debug/ieee80211/' + phyname + '/hwsim/dfs_simulate_radar'
+    with open(radar_file, 'w') as f:
+        f.write('1')
+
+@long_duration_test
+def test_mesh_peer_connected_dfs(dev):
+    """Mesh peer connected (DFS)"""
+    dev[0].set("country", "DE")
+    dev[1].set("country", "DE")
+
+    check_regdom_change(dev[0])
+    check_regdom_change(dev[1])
+
+    check_mesh_support(dev[0])
+    add_open_mesh_network(dev[0], freq="5500", beacon_int=160)
+    add_open_mesh_network(dev[1], freq="5500", beacon_int=160)
+    check_dfs_started(dev[0])
+    check_dfs_finished(dev[0])
+    check_mesh_joined_connected(dev, timeout0=10)
+
+    dfs_simulate_radar(dev[0])
+
+    check_mesh_radar_handling_finished(dev[0], timeout=75)
+
+    dev[0].set("country", "00")
+    dev[1].set("country", "00")
+
+    check_regdom_change(dev[0])
+    check_regdom_change(dev[1])
 
 def test_wpas_mesh_peer_connected(dev):
     """wpa_supplicant MESH peer connected"""
@@ -406,7 +459,7 @@ def set_reg(dev, country):
 def clear_reg_setting(dev):
     dev[0].request("MESH_GROUP_REMOVE " + dev[0].ifname)
     dev[1].request("MESH_GROUP_REMOVE " + dev[1].ifname)
-    subprocess.call(['iw', 'reg', 'set', '00'])
+    clear_regdom_dev(dev)
     dev[0].flush_scan_cache()
     dev[1].flush_scan_cache()
 
@@ -906,11 +959,7 @@ def test_wpas_mesh_open_5ghz(dev, apdev):
     try:
         _test_wpas_mesh_open_5ghz(dev, apdev)
     finally:
-        dev[0].request("MESH_GROUP_REMOVE " + dev[0].ifname)
-        dev[1].request("MESH_GROUP_REMOVE " + dev[1].ifname)
-        subprocess.call(['iw', 'reg', 'set', '00'])
-        dev[0].flush_scan_cache()
-        dev[1].flush_scan_cache()
+        clear_reg_setting(dev)
 
 def _test_wpas_mesh_open_5ghz(dev, apdev):
     check_mesh_support(dev[0])
@@ -933,56 +982,6 @@ def _test_wpas_mesh_open_5ghz(dev, apdev):
     dev[0].dump_monitor()
     dev[1].dump_monitor()
 
-def test_wpas_mesh_open_5ghz_coex(dev, apdev):
-    """Mesh network on 5 GHz band and 20/40 coex change"""
-    try:
-        _test_wpas_mesh_open_5ghz_coex(dev, apdev)
-    finally:
-        dev[0].request("MESH_GROUP_REMOVE " + dev[0].ifname)
-        dev[1].request("MESH_GROUP_REMOVE " + dev[1].ifname)
-        set_world_reg(apdev0=apdev[0], dev0=dev[0])
-        dev[0].flush_scan_cache()
-        dev[1].flush_scan_cache()
-
-def _test_wpas_mesh_open_5ghz_coex(dev, apdev):
-    check_mesh_support(dev[0])
-    subprocess.call(['iw', 'reg', 'set', 'US'])
-
-    # Start a 20 MHz BSS on channel 40 that would be the secondary channel of
-    # HT40+ mesh on channel 36.
-    params = {"ssid": "test-ht40",
-              "hw_mode": "a",
-              "channel": "40",
-              "country_code": "US"}
-    hapd = hostapd.add_ap(apdev[0], params)
-    bssid = hapd.own_addr()
-
-    for i in range(2):
-        for j in range(5):
-            ev = dev[i].wait_event(["CTRL-EVENT-REGDOM-CHANGE"], timeout=5)
-            if ev is None:
-                raise Exception("No regdom change event")
-            if "alpha2=US" in ev:
-                break
-        dev[i].scan_for_bss(bssid, freq=5200)
-        add_open_mesh_network(dev[i], freq="5180")
-
-    check_mesh_joined_connected(dev)
-
-    freq = dev[0].get_status_field("freq")
-    if freq != "5200":
-        raise Exception("Unexpected STATUS freq=" + freq)
-    sig = dev[0].request("SIGNAL_POLL").splitlines()
-    if "FREQUENCY=5200" not in sig:
-        raise Exception("Unexpected SIGNAL_POLL output: " + str(sig))
-
-    hapd.disable()
-    dev[0].mesh_group_remove()
-    dev[1].mesh_group_remove()
-    check_mesh_group_removed(dev[0])
-    check_mesh_group_removed(dev[1])
-    dev[0].dump_monitor()
-    dev[1].dump_monitor()
 
 def test_wpas_mesh_open_ht40(dev, apdev):
     """Mesh and HT40 support difference"""
@@ -992,7 +991,7 @@ def test_wpas_mesh_open_ht40(dev, apdev):
         dev[0].request("MESH_GROUP_REMOVE " + dev[0].ifname)
         dev[1].request("MESH_GROUP_REMOVE " + dev[1].ifname)
         dev[2].request("MESH_GROUP_REMOVE " + dev[2].ifname)
-        subprocess.call(['iw', 'reg', 'set', '00'])
+        clear_regdom_dev(dev)
         dev[0].flush_scan_cache()
         dev[1].flush_scan_cache()
         dev[2].flush_scan_cache()
@@ -1037,11 +1036,7 @@ def test_wpas_mesh_open_vht40(dev, apdev):
     try:
         _test_wpas_mesh_open_vht40(dev, apdev)
     finally:
-        dev[0].request("MESH_GROUP_REMOVE " + dev[0].ifname)
-        dev[1].request("MESH_GROUP_REMOVE " + dev[1].ifname)
-        subprocess.call(['iw', 'reg', 'set', '00'])
-        dev[0].flush_scan_cache()
-        dev[1].flush_scan_cache()
+        clear_reg_setting(dev)
 
 def _test_wpas_mesh_open_vht40(dev, apdev):
     check_mesh_support(dev[0])
@@ -1089,11 +1084,7 @@ def test_wpas_mesh_open_vht20(dev, apdev):
     try:
         _test_wpas_mesh_open_vht20(dev, apdev)
     finally:
-        dev[0].request("MESH_GROUP_REMOVE " + dev[0].ifname)
-        dev[1].request("MESH_GROUP_REMOVE " + dev[1].ifname)
-        subprocess.call(['iw', 'reg', 'set', '00'])
-        dev[0].flush_scan_cache()
-        dev[1].flush_scan_cache()
+        clear_reg_setting(dev)
 
 def _test_wpas_mesh_open_vht20(dev, apdev):
     check_mesh_support(dev[0])
@@ -1133,11 +1124,7 @@ def test_wpas_mesh_open_vht_80p80(dev, apdev):
     try:
         _test_wpas_mesh_open_vht_80p80(dev, apdev)
     finally:
-        dev[0].request("MESH_GROUP_REMOVE " + dev[0].ifname)
-        dev[1].request("MESH_GROUP_REMOVE " + dev[1].ifname)
-        subprocess.call(['iw', 'reg', 'set', '00'])
-        dev[0].flush_scan_cache()
-        dev[1].flush_scan_cache()
+        clear_reg_setting(dev)
 
 def _test_wpas_mesh_open_vht_80p80(dev, apdev):
     check_mesh_support(dev[0])
@@ -1181,11 +1168,7 @@ def test_mesh_open_vht_160(dev, apdev):
     try:
         _test_mesh_open_vht_160(dev, apdev)
     finally:
-        dev[0].request("MESH_GROUP_REMOVE " + dev[0].ifname)
-        dev[1].request("MESH_GROUP_REMOVE " + dev[1].ifname)
-        subprocess.call(['iw', 'reg', 'set', '00'])
-        dev[0].flush_scan_cache()
-        dev[1].flush_scan_cache()
+        clear_reg_setting(dev)
 
 def _test_mesh_open_vht_160(dev, apdev):
     check_mesh_support(dev[0])
