@@ -4413,6 +4413,9 @@ static int nl80211_put_sae_pwe(struct nl_msg *msg, int pwe)
 {
 	u8 sae_pwe;
 
+#ifdef CONFIG_WFA 
+	return 0;
+#endif
 	wpa_printf(MSG_DEBUG, "nl802111: sae_pwe=%d", pwe);
 	if (pwe == 0)
 		sae_pwe = NL80211_SAE_PWE_HUNT_AND_PECK;
