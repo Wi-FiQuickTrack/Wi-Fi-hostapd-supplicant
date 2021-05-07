@@ -1167,6 +1167,14 @@ static bool hostapd_sae_pk_password_without_pk(struct hostapd_bss_config *bss)
 
 static bool hostapd_config_check_bss_6g(struct hostapd_bss_config *bss)
 {
+#ifdef CONFIG_TESTING_OPTIONS
+	if (bss->skip_6g_bss_security_check) {
+		wpa_printf(MSG_INFO,
+			   "TESTING: Skip BSS security mode check in 6 GHz");
+		return true;
+	}
+#endif /* CONFIG_TESTING_OPTIONS */
+
 	if (bss->wpa != WPA_PROTO_RSN) {
 		wpa_printf(MSG_ERROR,
 			   "Pre-RSNA security methods are not allowed in 6 GHz");
