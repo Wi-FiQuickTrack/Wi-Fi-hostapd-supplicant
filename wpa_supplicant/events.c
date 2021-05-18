@@ -549,6 +549,108 @@ static int wpa_supplicant_match_privacy(struct wpa_bss *bss,
 	return !privacy;
 }
 
+#ifdef CONFIG_WFA
+static int wpa_supplicant_check_6g_security(struct wpa_supplicant *wpa_s,
+					 struct wpa_ssid *ssid,
+					 struct wpa_bss *bss)
+{
+	struct wpa_ie_data ie;
+	int proto_match = 0;
+	const u8 *rsn_ie, *wpa_ie, *rsnx_ie;
+#ifdef CONFIG_WEP
+	int wep_ok;
+#endif /* CONFIG_WEP */
+#ifdef CONFIG_SAE
+	u8 rsnxe_capa = 0;
+#endif /* CONFIG_SAE */
+
+	if (!is_6ghz_freq(bss->freq))
+		return 1;
+
+#ifdef CONFIG_SAE
+	rsnx_ie = wpa_bss_get_ie(bss, WLAN_EID_RSNX);
+	if (rsnx_ie && rsnx_ie[1] >= 1)
+		rsnxe_capa = rsnx_ie[2];
+#endif /* CONFIG_SAE */
+
+#ifdef CONFIG_WEP
+	wep_ok = !wpa_key_mgmt_wpa(ssid->key_mgmt) &&
+		(((ssid->key_mgmt & WPA_KEY_MGMT_NONE) &&
+		  ssid->wep_key_len[ssid->wep_tx_keyidx] > 0) ||
+		 (ssid->key_mgmt & WPA_KEY_MGMT_IEEE8021X_NO_WPA));
+#endif /* CONFIG_WEP */
+
+	rsn_ie = wpa_bss_get_ie(bss, WLAN_EID_RSN);
+	if ((ssid->proto & (WPA_PROTO_RSN | WPA_PROTO_OSEN)) && rsn_ie) {
+		proto_match++;
+		if (wpa_parse_wpa_ie(rsn_ie, 2 + rsn_ie[1], &ie)) {
+			wpa_dbg(wpa_s, MSG_DEBUG,
+					"   skip RSN IE - parse failed");
+			return 0;
+		}
+
+		if ((ie.key_mgmt & WPA_KEY_MGMT_PSK) || 
+				(ie.key_mgmt & WPA_KEY_MGMT_PSK_SHA256)) {
+			wpa_dbg(wpa_s, MSG_DEBUG,
+					"   skip - Discover WPA2-PSK WLAN of the AP in 6 GHz");
+			return 0;	
+		}
+
+		if (ie.key_mgmt & WPA_KEY_MGMT_IEEE8021X) {
+			wpa_dbg(wpa_s, MSG_DEBUG,
+					"   skip - Discover WPA2-ENT WLAN of the AP in 6 GHz");
+			return 0;	
+		}
+#ifdef CONFIG_SAE
+		if ((ie.key_mgmt & WPA_KEY_MGMT_SAE) && 
+			!(rsnxe_capa & BIT(WLAN_RSNX_CAPAB_SAE_H2E))) {
+			wpa_dbg(wpa_s, MSG_DEBUG,
+					"   skip - Discover HnP only WLAN of the AP in 6 GHz");
+			return 0;		
+		}
+#endif /* CONFIG_SAE */
+	}	
+
+	wpa_ie = wpa_bss_get_vendor_ie(bss, WPA_IE_VENDOR_TYPE);
+	if ((ssid->proto & WPA_PROTO_WPA) && wpa_ie) {
+		proto_match++;
+		if (wpa_parse_wpa_ie(wpa_ie, 2 + wpa_ie[1], &ie)) {
+			wpa_dbg(wpa_s, MSG_DEBUG,
+					"   skip WPA IE - parse failed");
+			return 0;
+		}
+
+		if ((ie.pairwise_cipher & WPA_CIPHER_TKIP) &&
+			(ie.key_mgmt & WPA_KEY_MGMT_PSK)) {
+			wpa_dbg(wpa_s, MSG_DEBUG,
+					"   skip - Discover WPA-PSK WLAN of the AP in 6 GHz");
+			return 0;
+		}
+
+		if ((ie.pairwise_cipher & WPA_CIPHER_TKIP) &&
+			(ie.key_mgmt & WPA_KEY_MGMT_IEEE8021X)) {
+			wpa_dbg(wpa_s, MSG_DEBUG,
+					"   skip - Discover WPA-Enterprise WLAN of the AP in 6 GHz");
+			return 0;
+		}
+	}
+
+	if (wep_ok && !proto_match && 
+		bss->caps & IEEE80211_CAP_PRIVACY) {
+		wpa_dbg(wpa_s, MSG_DEBUG,
+				"   skip - Discover WEP WLAN of the AP in 6 GHz");
+		return 0;	
+	}
+
+	if (!proto_match && !(bss->caps & IEEE80211_CAP_PRIVACY)) {
+		wpa_dbg(wpa_s, MSG_DEBUG,
+				"   skip - Discover open WLAN of the AP in 6 GHz");
+		return 0;		
+	}
+
+	return 1;
+}
+#endif /* CONFIG_WFA */
 
 static int wpa_supplicant_ssid_bss_match(struct wpa_supplicant *wpa_s,
 					 struct wpa_ssid *ssid,
@@ -1239,6 +1341,11 @@ static bool wpa_scan_res_ok(struct wpa_supplicant *wpa_s, struct wpa_ssid *ssid,
 
 	if (!wpa_supplicant_ssid_bss_match(wpa_s, ssid, bss, debug_print))
 		return false;
+
+#ifdef CONFIG_WFA
+	if (!wpa_supplicant_check_6g_security(wpa_s, ssid, bss))
+		return false;
+#endif /* CONFIG_WFA */
 
 	if (!osen && !wpa &&
 	    !(ssid->key_mgmt & WPA_KEY_MGMT_NONE) &&
