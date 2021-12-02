@@ -1353,9 +1353,6 @@ static int hostapd_config_check_bss(struct hostapd_bss_config *bss,
 #endif /* CONFIG_WEP */
 
 	if (full_config && conf->ieee80211ax && bss->wpa &&
-#ifdef CONFIG_TESTING_OPTIONS
-	    !bss->skip_6g_bss_security_check &&
-#endif /* CONFIG_TESTING_OPTIONS */
 	    !(bss->wpa_pairwise & WPA_CIPHER_CCMP) &&
 	    !(bss->rsn_pairwise & (WPA_CIPHER_CCMP | WPA_CIPHER_GCMP |
 				   WPA_CIPHER_CCMP_256 | WPA_CIPHER_GCMP_256)))
