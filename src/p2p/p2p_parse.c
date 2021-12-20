@@ -531,6 +531,10 @@ int p2p_parse_ies(const u8 *data, size_t len, struct p2p_message *msg)
 		msg->ds_params = elems.ds_params;
 	if (elems.ssid)
 		msg->ssid = elems.ssid - 2;
+#ifdef CONFIG_WFA
+	if (elems.supp_rates)
+		msg->supp_rates = elems.supp_rates - 1;
+#endif
 
 	msg->wps_attributes = ieee802_11_vendor_ie_concat(data, len,
 							  WPS_DEV_OUI_WFA);

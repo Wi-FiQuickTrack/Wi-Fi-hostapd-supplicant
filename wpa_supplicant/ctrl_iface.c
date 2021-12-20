@@ -6995,6 +6995,9 @@ static int p2p_ctrl_peer(struct wpa_supplicant *wpa_s, char *cmd,
 			  "config_methods=0x%x\n"
 			  "dev_capab=0x%x\n"
 			  "group_capab=0x%x\n"
+#ifdef CONFIG_WFA
+			  "use_11b_rates=%d\n"
+#endif
 			  "level=%d\n",
 			  MAC2STR(info->p2p_device_addr),
 			  wps_dev_type_bin2str(info->pri_dev_type,
@@ -7007,6 +7010,9 @@ static int p2p_ctrl_peer(struct wpa_supplicant *wpa_s, char *cmd,
 			  info->config_methods,
 			  info->dev_capab,
 			  group_capab,
+#ifdef CONFIG_WFA
+			  info->use_11b_rates,
+#endif
 			  info->level);
 	if (os_snprintf_error(end - pos, res))
 		return pos - buf;
@@ -7300,6 +7306,18 @@ static int p2p_ctrl_set(struct wpa_supplicant *wpa_s, char *cmd)
 					      chan);
 		return 0;
 	}
+
+#ifdef CONFIG_WFA
+	if (os_strcmp(cmd, "disable_p2p_ie") == 0) {
+		wpa_s->p2p_disable_p2p_ie = atoi(param);
+		return 0;
+	}
+
+	if (os_strcmp(cmd, "use_11b_rates") == 0) {
+		wpa_s->p2p_use_11b_rates = atoi(param);
+		return 0;
+	}
+#endif
 
 	wpa_printf(MSG_DEBUG, "CTRL_IFACE: Unknown P2P_SET field value '%s'",
 		   cmd);
