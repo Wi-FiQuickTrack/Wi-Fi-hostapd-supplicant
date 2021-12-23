@@ -377,6 +377,13 @@ struct p2p_peer_info {
 	 */
 	u8 group_capab;
 
+#ifdef CONFIG_WFA
+	/**
+	 * use_11b_rates - Use 11B rates in 'Supported Rates' IE
+	 */
+	int use_11b_rates;
+#endif
+
 	/**
 	 * wps_sec_dev_type_list - WPS secondary device type list
 	 *

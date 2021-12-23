@@ -626,6 +626,11 @@ struct p2p_message {
 	/* SSID IE */
 	const u8 *ssid;
 
+#ifdef CONFIG_WFA
+	/* Supported Rates IE */
+	const u8 *supp_rates;
+#endif
+
 	/* P2PS */
 	u8 service_hash_count;
 	const u8 *service_hash;

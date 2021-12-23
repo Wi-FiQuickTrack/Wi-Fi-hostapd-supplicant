@@ -795,6 +795,17 @@ int p2p_add_device(struct p2p_data *p2p, const u8 *addr, int freq,
 		dev->oper_ssid_len = msg.ssid[1];
 	}
 
+#ifdef CONFIG_WFA
+	if (msg.supp_rates) {
+		u8 rate;
+		for (i = 0; i < msg.supp_rates[0]; i++) {
+			rate = msg.supp_rates[i+1] & 0x7f;
+			if (rate == 0x02 || rate == 0x04 || rate == 0x0b || rate == 0x16)
+				dev->info.use_11b_rates = 1;
+		}
+	}
+#endif
+
 	wpabuf_free(dev->info.p2ps_instance);
 	dev->info.p2ps_instance = NULL;
 	if (msg.adv_service_instance && msg.adv_service_instance_len)

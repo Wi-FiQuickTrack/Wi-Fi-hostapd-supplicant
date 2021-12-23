@@ -473,7 +473,12 @@ static int wpas_p2p_scan(void *ctx, enum p2p_scan_type type, int freq,
 		break;
 	}
 
-	ielen = p2p_scan_ie_buf_len(wpa_s->global->p2p);
+#ifdef CONFIG_WFA
+	if (wpa_s->p2p_disable_p2p_ie)
+		ielen = 0;
+	else
+#endif
+		ielen = p2p_scan_ie_buf_len(wpa_s->global->p2p);
 	ies = wpabuf_alloc(wpabuf_len(wps_ie) + ielen);
 	if (ies == NULL) {
 		wpabuf_free(wps_ie);
@@ -482,10 +487,19 @@ static int wpas_p2p_scan(void *ctx, enum p2p_scan_type type, int freq,
 	wpabuf_put_buf(ies, wps_ie);
 	wpabuf_free(wps_ie);
 
-	bands = wpas_get_bands(wpa_s, params->freqs);
-	p2p_scan_ie(wpa_s->global->p2p, ies, dev_id, bands);
+#ifdef CONFIG_WFA
+	if (!wpa_s->p2p_disable_p2p_ie) {
+#endif
+		bands = wpas_get_bands(wpa_s, params->freqs);
+		p2p_scan_ie(wpa_s->global->p2p, ies, dev_id, bands);
+#ifdef CONFIG_WFA
+	}
+#endif
 
 	params->p2p_probe = 1;
+#ifdef CONFIG_WFA
+	params->p2p_use_11b_rates = wpa_s->p2p_use_11b_rates;
+#endif
 	n = os_malloc(wpabuf_len(ies));
 	if (n == NULL) {
 		wpabuf_free(ies);
