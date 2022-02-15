@@ -3338,8 +3338,13 @@ static enum wps_process_res wps_process_wsc_done(struct wps_data *wps,
 			cred.auth_type = WPS_AUTH_WPA2PSK;
 			cred.encr_type = WPS_ENCR_AES;
 		} else {
+#ifdef CONFIG_WFA
+			cred.auth_type = WPS_AUTH_WPA2PSK;
+			cred.encr_type = WPS_ENCR_AES;
+#else
 			cred.auth_type = WPS_AUTH_WPAPSK | WPS_AUTH_WPA2PSK;
 			cred.encr_type = WPS_ENCR_TKIP | WPS_ENCR_AES;
+#endif
 		}
 		os_memcpy(cred.key, wps->new_psk, wps->new_psk_len);
 		cred.key_len = wps->new_psk_len;
