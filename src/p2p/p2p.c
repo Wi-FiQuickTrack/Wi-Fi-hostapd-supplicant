@@ -46,7 +46,11 @@ static void p2p_scan_timeout(void *eloop_ctx, void *timeout_ctx);
  * entries will be removed
  */
 #ifndef P2P_PEER_EXPIRATION_AGE
+#ifdef CONFIG_WFA
+#define P2P_PEER_EXPIRATION_AGE 120
+#else
 #define P2P_PEER_EXPIRATION_AGE 60
+#endif
 #endif /* P2P_PEER_EXPIRATION_AGE */
 
 
