@@ -1047,6 +1047,13 @@ static void p2p_search(struct p2p_data *p2p)
 		type = P2P_SCAN_SOCIAL;
 		p2p_dbg(p2p, "Starting search");
 	}
+#ifdef CONFIG_WFA
+	if (p2p->find_specified_freq > 0) {
+		freq = p2p->find_specified_freq;
+		type = P2P_SCAN_SPECIFIC;
+		p2p_dbg(p2p, "Starting search specific freq %u", freq);
+	}
+#endif
 
 	res = p2p->cfg->p2p_scan(p2p->cfg->cb_ctx, type, freq,
 				 p2p->num_req_dev_types, p2p->req_dev_types,
@@ -1249,10 +1256,14 @@ int p2p_find(struct p2p_data *p2p, unsigned int timeout,
 	p2p->cfg->stop_listen(p2p->cfg->cb_ctx);
 	p2p->find_pending_full = 0;
 	p2p->find_type = type;
+#ifdef CONFIG_WFA
+	p2p->find_specified_freq = freq;
+#else
 	if (freq != 2412 && freq != 2437 && freq != 2462 && freq != 60480)
 		p2p->find_specified_freq = freq;
 	else
 		p2p->find_specified_freq = 0;
+#endif
 	p2p_device_clear_reported(p2p);
 	os_memset(p2p->sd_query_no_ack, 0, ETH_ALEN);
 	p2p_set_state(p2p, P2P_SEARCH);
@@ -3302,6 +3313,13 @@ void p2p_continue_find(struct p2p_data *p2p)
 
 skip_sd:
 	os_memset(p2p->sd_query_no_ack, 0, ETH_ALEN);
+#ifdef CONFIG_WFA
+	if (p2p->find_specified_freq > 0) {
+		/* No listen, continue find */
+		p2p_set_timeout(p2p, 0, 500000);
+		return;
+	}
+#endif
 	p2p_listen_in_find(p2p, 1);
 }
 
