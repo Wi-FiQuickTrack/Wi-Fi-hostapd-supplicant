@@ -3002,6 +3002,9 @@ struct p2p_data * p2p_init(const struct p2p_config *cfg)
 	if (cfg->concurrent_operations)
 		p2p->dev_capab |= P2P_DEV_CAPAB_CONCURRENT_OPER;
 	p2p->dev_capab |= P2P_DEV_CAPAB_CLIENT_DISCOVERABILITY;
+#ifdef CONFIG_WFA
+	p2p->dev_capab |= P2P_DEV_CAPAB_INFRA_MANAGED;
+#endif
 
 	dl_list_init(&p2p->devices);
 
