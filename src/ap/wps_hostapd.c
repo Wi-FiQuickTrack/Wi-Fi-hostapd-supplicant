@@ -934,6 +934,13 @@ static void hostapd_wps_event_cb(void *ctx, enum wps_event event,
 	case WPS_EV_AP_PIN_SUCCESS:
 		hostapd_wps_ap_pin_success(hapd);
 		break;
+#ifdef CONFIG_WFA
+	case WPS_EV_M1:
+		wpa_msg(hapd->msg_ctx, MSG_INFO, "WPS-M1 %s", data->m1.data);
+		break;
+	case WPS_EV_M2:
+		break;
+#endif
 	}
 	if (hapd->wps_event_cb)
 		hapd->wps_event_cb(hapd->wps_event_cb_ctx, event, data);

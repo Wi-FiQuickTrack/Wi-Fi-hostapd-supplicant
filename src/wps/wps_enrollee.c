@@ -971,6 +971,25 @@ static enum wps_process_res wps_process_m2(struct wps_data *wps,
 		return WPS_CONTINUE;
 	}
 
+#ifdef CONFIG_WFA
+	/* send M2 attribute event for verification */
+	if (wps->wps->event_cb) {
+		size_t hex_len = 2 * wpabuf_len(msg) + 1;
+		char *hex = os_malloc(hex_len);
+		if (hex) {
+			union wps_event_data data;
+			struct wps_event_m2 *m2 = &data.m2;
+
+			wpa_snprintf_hex(hex, hex_len, wpabuf_head(msg),
+				 wpabuf_len(msg));
+			os_memset(&data, 0, sizeof(data));
+			m2->data = hex;
+			wps->wps->event_cb(wps->wps->cb_ctx, WPS_EV_M2, &data);
+			os_free(hex);
+		}
+	}
+#endif /* CONFIG_WFA */
+
 	if (wps_process_registrar_nonce(wps, attr->registrar_nonce) ||
 	    wps_process_enrollee_nonce(wps, attr->enrollee_nonce) ||
 	    wps_process_uuid_r(wps, attr->uuid_r) ||

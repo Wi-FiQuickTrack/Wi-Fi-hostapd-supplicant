@@ -911,6 +911,13 @@ static void wpa_supplicant_wps_event(void *ctx, enum wps_event event,
 		break;
 	case WPS_EV_AP_PIN_SUCCESS:
 		break;
+#ifdef CONFIG_WFA
+	case WPS_EV_M1:
+		break;
+	case WPS_EV_M2:
+		wpa_msg(wpa_s, MSG_INFO, "WPS-M2 %s", data->m2.data);
+		break;
+#endif /* CONFIG_WFA */
 	}
 }
 
