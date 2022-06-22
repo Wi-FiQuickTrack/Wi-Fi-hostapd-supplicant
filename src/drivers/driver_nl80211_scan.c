@@ -350,6 +350,14 @@ int wpa_driver_nl80211_scan(struct i802_bss *bss,
 		 * 9, 12, 18, 24, 36, 48, 54 Mbps from non-MCS rates. All 5 GHz
 		 * rates are left enabled.
 		 */
+#ifdef CONFIG_WFA
+		if (params->p2p_use_11b_rates) {
+			if (nla_put(msg, NL80211_BAND_2GHZ, 4,
+			    "\x02\x04\x0b\x16"))
+				goto fail;
+			nla_nest_end(msg, rates);
+		} else {
+#endif
 		if (nla_put(msg, NL80211_BAND_2GHZ, 8,
 			    "\x0c\x12\x18\x24\x30\x48\x60\x6c"))
 			goto fail;
@@ -357,6 +365,9 @@ int wpa_driver_nl80211_scan(struct i802_bss *bss,
 
 		if (nla_put_flag(msg, NL80211_ATTR_TX_NO_CCK_RATE))
 			goto fail;
+#ifdef CONFIG_WFA
+		}
+#endif
 	}
 
 	if (params->bssid) {

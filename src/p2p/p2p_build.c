@@ -352,6 +352,9 @@ void p2p_buf_add_ext_listen_timing(struct wpabuf *buf, u16 period,
 
 void p2p_buf_add_p2p_interface(struct wpabuf *buf, struct p2p_data *p2p)
 {
+#ifdef CONFIG_WFA
+	unsigned char if_addr[ETH_ALEN];
+#endif
 	/* P2P Interface */
 	wpabuf_put_u8(buf, P2P_ATTR_INTERFACE);
 	wpabuf_put_le16(buf, ETH_ALEN + 1 + ETH_ALEN);
@@ -363,7 +366,14 @@ void p2p_buf_add_p2p_interface(struct wpabuf *buf, struct p2p_data *p2p)
 	 */
 	/* P2P Interface Address Count */
 	wpabuf_put_u8(buf, 1);
+#ifdef CONFIG_WFA
+	// DUT sample code
+	memcpy(if_addr, p2p->cfg->dev_addr, ETH_ALEN);
+	if_addr[ETH_ALEN-1] += 1;
+	wpabuf_put_data(buf, if_addr, ETH_ALEN);
+#else
 	wpabuf_put_data(buf, p2p->cfg->dev_addr, ETH_ALEN);
+#endif
 }
 
 

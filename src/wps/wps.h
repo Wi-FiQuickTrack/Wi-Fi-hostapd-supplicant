@@ -449,6 +449,17 @@ enum wps_event {
 	 */
 	WPS_EV_M2D,
 
+#ifdef CONFIG_WFA
+	/**
+	 * WPS_EV_M1 - M1 received
+	 */
+	WPS_EV_M1,
+
+	/**
+	 * WPS_EV_M1 - M2 received
+	 */
+	WPS_EV_M2,
+#endif /* CONFIG_WFA */
 	/**
 	 * WPS_EV_FAIL - Registration failed
 	 */
@@ -543,6 +554,22 @@ union wps_event_data {
 		u16 config_error;
 		u16 dev_password_id;
 	} m2d;
+
+#ifdef CONFIG_WFA
+	/**
+	 * struct wps_event_m1 - M1 event data
+	 */
+	struct wps_event_m1 {
+		const char *data;
+	} m1;
+
+	/**
+	 * struct wps_event_m2 - M2 event data
+	 */
+	struct wps_event_m2 {
+		const char *data;
+	} m2;
+#endif /* CONFIG_WFA */
 
 	/**
 	 * struct wps_event_fail - Registration failure information

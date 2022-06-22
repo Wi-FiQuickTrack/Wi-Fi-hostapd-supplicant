@@ -493,6 +493,16 @@ struct wpa_driver_scan_params {
 	 */
 	unsigned int p2p_probe:1;
 
+#ifdef CONFIG_WFA
+	/**
+	 * p2p_use_11b_rates - Used to enable only CCK rates for P2P probes
+	 *
+	 * This is used to request the driver to use 11b only rates in P2P probe
+	 * for negative test.
+	 */
+	unsigned int p2p_use_11b_rates:1;
+#endif
+
 	/**
 	 * only_new_results - Request driver to report only new results
 	 *

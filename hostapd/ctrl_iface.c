@@ -2538,10 +2538,12 @@ static int hostapd_ctrl_set_immediate_m3(struct hostapd_data *hapd, const char *
 {
 	if (os_strstr(cmd, "start") != NULL) {
 		wpa_printf(MSG_INFO, "TESTING: Setting Immediate M3 flag to 1");
-		wpa_auth_set_immediate_m3(hapd->wpa_auth, true);
+		wpa_auth_set_immediate_m3(hapd->wpa_auth, 1,
+					  os_strstr(cmd, "immediate-m1") != NULL,
+					  os_strstr(cmd, "change-anonce") != NULL);
 	} else if (os_strstr(cmd, "stop") != NULL) {
 		wpa_printf(MSG_INFO, "TESTING: Setting Immediate M3 flag to 0");
-		wpa_auth_set_immediate_m3(hapd->wpa_auth, false);
+		wpa_auth_set_immediate_m3(hapd->wpa_auth, 0, 0, 0);
 	} else
 		return -1;
 

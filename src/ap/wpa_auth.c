@@ -3609,8 +3609,8 @@ SM_STATE(WPA_PTK, PTKINITNEGOTIATING)
 	}
 #endif /* CONFIG_DPP2 */
 
-#ifdef CONFIG_TESTING_OPTIONS
-	if (conf->send_immediate_m3) {
+#ifdef CONFIG_WFA
+	if (conf->send_immediate_m3 && !conf->send_immediate_m1) {
 		int count;
 
 		wpa_printf(MSG_INFO, "Send 4 immediate M3 frames");
@@ -3632,6 +3632,32 @@ SM_STATE(WPA_PTK, PTKINITNEGOTIATING)
 		       WPA_KEY_INFO_ACK | WPA_KEY_INFO_INSTALL |
 		       WPA_KEY_INFO_KEY_TYPE,
 		       _rsc, sm->ANonce, kde, pos - kde, 0, encr);
+
+#ifdef CONFIG_WFA
+	if (conf->send_immediate_m3 && conf->send_immediate_m1) {
+		u8 *anonce = sm->ANonce;
+		u8 anonce_buf[WPA_NONCE_LEN];
+
+		if (conf->change_anonce) {
+			wpa_printf(MSG_INFO, "Random Anonce in M1");
+			if (random_get_bytes(anonce_buf, WPA_NONCE_LEN))
+				return;
+			anonce = anonce_buf;
+		}
+
+		wpa_printf(MSG_INFO, "Re-send immediate M1 and M3 frame");
+		wpa_send_eapol(sm->wpa_auth, sm,
+			       WPA_KEY_INFO_ACK | WPA_KEY_INFO_KEY_TYPE, NULL,
+			       anonce, NULL, 0, 0, 0);
+		wpa_send_eapol(sm->wpa_auth, sm,
+			       (secure ? WPA_KEY_INFO_SECURE : 0) |
+			       (wpa_mic_len(sm->wpa_key_mgmt, sm->pmk_len) ?
+				WPA_KEY_INFO_MIC : 0) |
+			       WPA_KEY_INFO_ACK | WPA_KEY_INFO_INSTALL |
+			       WPA_KEY_INFO_KEY_TYPE,
+			       _rsc, sm->ANonce, kde, pos - kde, 0, encr);
+	}
+#endif
 done:
 	os_free(kde);
 	os_free(wpa_ie_buf);
@@ -5640,9 +5666,11 @@ int wpa_auth_resend_group_m1(struct wpa_state_machine *sm,
 }
 
 
-void wpa_auth_set_immediate_m3(struct wpa_authenticator *wpa_auth, bool val)
+void wpa_auth_set_immediate_m3(struct wpa_authenticator *wpa_auth, int val, int m1, int anonce)
 {
 	wpa_auth->conf.send_immediate_m3 = val;
+	wpa_auth->conf.send_immediate_m1 = m1;
+	wpa_auth->conf.change_anonce = anonce;
 }
 
 

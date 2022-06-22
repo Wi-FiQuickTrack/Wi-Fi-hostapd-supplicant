@@ -2653,6 +2653,9 @@ static int wps_registrar_skip_overlap(struct wps_data *wps)
 
 
 static enum wps_process_res wps_process_m1(struct wps_data *wps,
+#ifdef CONFIG_WFA
+					   const struct wpabuf *msg,
+#endif
 					   struct wps_parse_attr *attr)
 {
 	wpa_printf(MSG_DEBUG, "WPS: Received M1");
@@ -2662,6 +2665,25 @@ static enum wps_process_res wps_process_m1(struct wps_data *wps,
 			   "receiving M1", wps->state);
 		return WPS_FAILURE;
 	}
+
+#ifdef CONFIG_WFA
+	/* send M1 attribute event for verification */
+	if (wps->wps->event_cb) {
+		size_t hex_len = 2 * wpabuf_len(msg) + 1;
+		char *hex = os_malloc(hex_len);
+		if (hex) {
+			union wps_event_data data;
+			struct wps_event_m1 *m1 = &data.m1;
+
+			wpa_snprintf_hex(hex, hex_len, wpabuf_head(msg),
+				 wpabuf_len(msg));
+			os_memset(&data, 0, sizeof(data));
+			m1->data = hex;
+			wps->wps->event_cb(wps->wps->cb_ctx, WPS_EV_M1, &data);
+			os_free(hex);
+		}
+	}
+#endif /* CONFIG_WFA */
 
 	if (wps_process_uuid_e(wps, attr->uuid_e) ||
 	    wps_process_mac_addr(wps, attr->mac_addr) ||
@@ -3077,7 +3099,11 @@ static enum wps_process_res wps_process_wsc_msg(struct wps_data *wps,
 				UPNP_WPS_WLANEVENT_TYPE_EAP, msg);
 		}
 #endif /* CONFIG_WPS_UPNP */
+#ifdef CONFIG_WFA
+		ret = wps_process_m1(wps, msg, &attr);
+#else
 		ret = wps_process_m1(wps, &attr);
+#endif
 		break;
 	case WPS_M3:
 		if (wps_validate_m3(msg) < 0)
@@ -3338,8 +3364,13 @@ static enum wps_process_res wps_process_wsc_done(struct wps_data *wps,
 			cred.auth_type = WPS_AUTH_WPA2PSK;
 			cred.encr_type = WPS_ENCR_AES;
 		} else {
+#ifdef CONFIG_WFA
+			cred.auth_type = WPS_AUTH_WPA2PSK;
+			cred.encr_type = WPS_ENCR_AES;
+#else
 			cred.auth_type = WPS_AUTH_WPAPSK | WPS_AUTH_WPA2PSK;
 			cred.encr_type = WPS_ENCR_TKIP | WPS_ENCR_AES;
+#endif
 		}
 		os_memcpy(cred.key, wps->new_psk, wps->new_psk_len);
 		cred.key_len = wps->new_psk_len;

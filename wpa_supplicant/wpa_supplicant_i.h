@@ -1062,6 +1062,10 @@ struct wpa_supplicant {
 	unsigned int p2p_go_max_oper_chwidth;
 	unsigned int p2p_go_vht_center_freq2;
 	int p2p_lo_started;
+#ifdef CONFIG_WFA
+	int p2p_disable_p2p_ie;
+	int p2p_use_11b_rates;
+#endif
 #endif /* CONFIG_P2P */
 
 	struct wpa_ssid *bgscan_ssid;
