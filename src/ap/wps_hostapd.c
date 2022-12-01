@@ -940,6 +940,8 @@ static void hostapd_wps_event_cb(void *ctx, enum wps_event event,
 		break;
 	case WPS_EV_M2:
 		break;
+	case WPS_EV_M3:
+		break;
 #endif
 	}
 	if (hapd->wps_event_cb)

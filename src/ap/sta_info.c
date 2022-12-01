@@ -1524,7 +1524,15 @@ void ap_sta_delayed_1x_auth_fail_disconnect(struct hostapd_data *hapd,
 	 * operations.
 	 */
 	eloop_cancel_timeout(ap_sta_delayed_1x_auth_fail_cb, hapd, sta);
+#ifdef CONFIG_WFA
+	/*
+	 * Extend the timeout from 10ms to 1secs to ensure EAP Failure frame
+	 * can send out successfully, and then perform the deauth.
+	 */
+	eloop_register_timeout(1, 0, ap_sta_delayed_1x_auth_fail_cb,
+#else
 	eloop_register_timeout(0, 10000, ap_sta_delayed_1x_auth_fail_cb,
+#endif
 			       hapd, sta);
 }
 

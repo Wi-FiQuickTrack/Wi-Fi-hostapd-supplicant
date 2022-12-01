@@ -539,6 +539,14 @@ static int wpa_supplicant_ctrl_iface_set(struct wpa_supplicant *wpa_s,
 		}
 	} else if (os_strcasecmp(cmd, "wps_fragment_size") == 0) {
 		wpa_s->wps_fragment_size = atoi(value);
+#ifdef CONFIG_WFA
+	} else if (os_strcasecmp(cmd, "wps_check_ap_setup_locked") == 0) {
+		wpa_s->wps_check_ap_setup_locked = atoi(value);
+	} else if (os_strcasecmp(cmd, "wps_skip_to_try_assoc") == 0) {
+		wpa_s->wps_skip_to_try_assoc = atoi(value);
+	} else if (os_strcasecmp(cmd, "wps_er_specify_conn_mac") == 0) {
+		wpa_s->wps_er_specify_conn_mac = atoi(value);
+#endif
 #ifdef CONFIG_WPS_TESTING
 	} else if (os_strcasecmp(cmd, "wps_version_number") == 0) {
 		long int val;

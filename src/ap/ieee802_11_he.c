@@ -109,8 +109,9 @@ u8 * hostapd_eid_he_capab(struct hostapd_data *hapd, u8 *eid,
 	case CHANWIDTH_80MHZ:
 	case CHANWIDTH_USE_HT:
 #ifdef CONFIG_TESTING_OPTIONS
-		/* Need to check 40Mhz in HT capability */
-		if (hapd->iface->conf->ht_capab & HT_CAP_INFO_SUPP_CHANNEL_WIDTH_SET)
+		/* Need to check 40Mhz in HT capability except 6G radio */
+		if ((hapd->iface->conf->ht_capab & HT_CAP_INFO_SUPP_CHANNEL_WIDTH_SET) ||
+		    is_6ghz_op_class(hapd->iconf->op_class))
 #endif
 		he_oper_chwidth |= HE_PHYCAP_CHANNEL_WIDTH_SET_40MHZ_IN_2G |
 			HE_PHYCAP_CHANNEL_WIDTH_SET_40MHZ_80MHZ_IN_5G;

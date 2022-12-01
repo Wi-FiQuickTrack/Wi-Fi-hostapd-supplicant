@@ -484,6 +484,14 @@ static int wpa_supplicant_wps_cred(void *ctx,
 		ssid->ssid_len = cred->ssid_len;
 	}
 
+#ifdef CONFIG_WFA
+	if (wpa_s->wps_er_specify_conn_mac) {
+		ssid->bssid_set = 1;
+		os_memcpy(ssid->bssid, cred->mac_addr, ETH_ALEN);
+		wpa_printf(MSG_DEBUG, "WPS: Specify the bssid " MACSTR " on current network profile.", MAC2STR(ssid->bssid));
+	}
+#endif
+
 	switch (cred->encr_type) {
 	case WPS_ENCR_NONE:
 		break;
@@ -913,9 +921,13 @@ static void wpa_supplicant_wps_event(void *ctx, enum wps_event event,
 		break;
 #ifdef CONFIG_WFA
 	case WPS_EV_M1:
+		wpa_msg(wpa_s, MSG_INFO, "WPS-M1 %s", data->m1.data);
 		break;
 	case WPS_EV_M2:
 		wpa_msg(wpa_s, MSG_INFO, "WPS-M2 %s", data->m2.data);
+		break;
+	case WPS_EV_M3:
+		wpa_msg(wpa_s, MSG_INFO, "WPS-M3 %s", data->m3.data);
 		break;
 #endif /* CONFIG_WFA */
 	}
@@ -1755,9 +1767,34 @@ int wpas_wps_ssid_bss_match(struct wpa_supplicant *wpa_s,
 					   wpa_s->scan_runs, (int) age.sec);
 				wpabuf_free(wps_ie);
 				return 0;
+#ifdef CONFIG_WFA
+			} else if (wpa_s->wps_skip_to_try_assoc) {
+				wpa_printf(MSG_DEBUG, "   skip on selecting based on WPS IE");
+				wpabuf_free(wps_ie);
+				return 0;
+#endif
 			}
 			wpa_printf(MSG_DEBUG, "   selected based on WPS IE");
 		} else {
+#ifdef CONFIG_WFA
+			if (wpa_s->wps_skip_to_try_assoc) {
+				struct wpabuf *wps_bcn_ie;
+
+				if (!(wps_bcn_ie = wpa_bss_get_vendor_ie_multi_beacon(bss, WPS_IE_VENDOR_TYPE))) {
+					wpabuf_free(wps_ie);
+					wpa_printf(MSG_DEBUG, "   skip - AP Beacon was not captured");
+					return 0;
+				} else if (!wps_is_addr_authorized(wps_bcn_ie, wpa_s->own_addr, 1)) {
+					wpabuf_free(wps_ie);
+					wpabuf_free(wps_bcn_ie);
+					wpa_printf(MSG_DEBUG, "   skip - Authorized mac missing from AP Beacon");
+					return 0;
+				} else {
+					wpabuf_free(wps_bcn_ie);
+					wpa_printf(MSG_DEBUG, "   Authorized mac found from AP Beacon");
+				}
+			}
+#endif
 			wpa_printf(MSG_DEBUG, "   selected based on WPS IE "
 				   "(Authorized MAC or Active PIN)");
 		}
@@ -1766,6 +1803,24 @@ int wpas_wps_ssid_bss_match(struct wpa_supplicant *wpa_s,
 	}
 
 	if (wps_ie) {
+#ifdef CONFIG_WFA
+		if (wpa_s->wps_check_ap_setup_locked) {
+			wpa_printf(MSG_DEBUG, "   enable to check ap setup locked.");
+			struct wpabuf *wps_bcn_ie;
+
+			wps_bcn_ie = wpa_bss_get_vendor_ie_multi_beacon(bss, WPS_IE_VENDOR_TYPE);
+			if (!wps_bcn_ie) {
+				wpa_printf(MSG_DEBUG, "   skip - WPS AP Beacon didn't scanned.");
+				wpabuf_free(wps_ie);
+				return 0;
+			} else if (!wps_is_ap_setup_locked(wps_ie) || !wps_is_ap_setup_locked(wps_bcn_ie)) {
+				wpa_printf(MSG_DEBUG, "   skip - WPS AP without both Beacon and Probe Response scanned.");
+				wpabuf_free(wps_ie);
+				wpabuf_free(wps_bcn_ie);
+				return 0;
+			}
+		}
+#endif
 		wpa_printf(MSG_DEBUG, "   selected based on WPS IE");
 		wpabuf_free(wps_ie);
 		return 1;

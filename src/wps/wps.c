@@ -346,6 +346,26 @@ int wps_is_addr_authorized(const struct wpabuf *msg, const u8 *addr,
 	return 0;
 }
 
+#ifdef CONFIG_WFA
+/**
+ * wps_is_ap_setup_locked - Check whether WPS IE has AP Setup Locked
+ * @msg: WPS IE contents from Beacon or Probe Response frame
+ * Returns: 1 if WPS IE includes AP Setup Locked, 0 if not
+ */
+int wps_is_ap_setup_locked(const struct wpabuf *msg)
+{
+	struct wps_parse_attr attr;
+
+	if (wps_parse_msg(msg, &attr) < 0)
+		return 0;
+
+	if (!attr.ap_setup_locked)
+		return 0;
+
+	return 1;
+}
+#endif
+
 
 /**
  * wps_ap_priority_compar - Prioritize WPS IE from two APs

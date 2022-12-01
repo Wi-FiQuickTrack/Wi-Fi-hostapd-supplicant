@@ -1087,6 +1087,11 @@ struct wpa_supplicant {
 	unsigned int wps_freq;
 	int wps_fragment_size;
 	int auto_reconnect_disabled;
+#ifdef CONFIG_WFA
+	int wps_skip_to_try_assoc;
+	int wps_check_ap_setup_locked;
+	int wps_er_specify_conn_mac;
+#endif
 
 	 /* Channel preferences for AP/P2P GO use */
 	int best_24_freq;

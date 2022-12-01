@@ -238,6 +238,7 @@ int wps_ap_priority_compar(const struct wpabuf *wps_a,
 			   const struct wpabuf *wps_b);
 int wps_is_addr_authorized(const struct wpabuf *msg, const u8 *addr,
 			   int ver1_compat);
+int wps_is_ap_setup_locked(const struct wpabuf *msg);
 const u8 * wps_get_uuid_e(const struct wpabuf *msg);
 int wps_is_20(const struct wpabuf *msg);
 
@@ -456,9 +457,14 @@ enum wps_event {
 	WPS_EV_M1,
 
 	/**
-	 * WPS_EV_M1 - M2 received
+	 * WPS_EV_M2 - M2 received
 	 */
 	WPS_EV_M2,
+
+	/**
+	 * WPS_EV_M3 - M3 received
+	 */
+	WPS_EV_M3,
 #endif /* CONFIG_WFA */
 	/**
 	 * WPS_EV_FAIL - Registration failed
@@ -569,6 +575,13 @@ union wps_event_data {
 	struct wps_event_m2 {
 		const char *data;
 	} m2;
+
+	/**
+	 * struct wps_event_m3 - M3 event data
+	 */
+	struct wps_event_m3 {
+		const char *data;
+	} m3;
 #endif /* CONFIG_WFA */
 
 	/**

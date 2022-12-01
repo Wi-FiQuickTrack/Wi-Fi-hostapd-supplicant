@@ -2821,6 +2821,25 @@ static enum wps_process_res wps_process_m3(struct wps_data *wps,
 		return WPS_CONTINUE;
 	}
 
+#ifdef CONFIG_WFA
+	/* send M3 attribute event for verification */
+	if (wps->wps->event_cb) {
+		size_t hex_len = 2 * wpabuf_len(msg) + 1;
+		char *hex = os_malloc(hex_len);
+		if (hex) {
+			union wps_event_data data;
+			struct wps_event_m3 *m3 = &data.m3;
+
+			wpa_snprintf_hex(hex, hex_len, wpabuf_head(msg),
+				 wpabuf_len(msg));
+			os_memset(&data, 0, sizeof(data));
+			m3->data = hex;
+			wps->wps->event_cb(wps->wps->cb_ctx, WPS_EV_M3, &data);
+			os_free(hex);
+		}
+	}
+#endif /* CONFIG_WFA */
+
 	if (wps->pbc && wps->wps->registrar->force_pbc_overlap &&
 	    !wps_registrar_skip_overlap(wps)) {
 		wpa_printf(MSG_DEBUG, "WPS: Reject negotiation due to PBC "
