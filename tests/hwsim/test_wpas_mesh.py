@@ -24,8 +24,8 @@ from hwsim_utils import set_group_map
 def check_mesh_support(dev, secure=False):
     if "MESH" not in dev.get_capability("modes"):
         raise HwsimSkip("Driver does not support mesh")
-    if secure and "SAE" not in dev.get_capability("auth_alg"):
-        raise HwsimSkip("SAE not supported")
+    if secure:
+        check_sae_capab(dev)
 
 def check_mesh_scan(dev, params, other_started=False, beacon_int=0):
     if not other_started:
@@ -70,6 +70,10 @@ def check_mesh_scan(dev, params, other_started=False, beacon_int=0):
     bss = dev.get_bss(bssid)
     if bss is None:
         raise Exception("Could not get BSS entry for mesh")
+    if 'mesh_id' not in bss:
+        raise Exception("mesh_id missing from BSS entry")
+    if bss['mesh_id'] != "wpas-mesh-open":
+        raise Exception("Incorrect mesh_id: " + bss['mesh_id'])
     if 'mesh_capability' not in bss:
         raise Exception("mesh_capability missing from BSS entry")
     if beacon_int:
@@ -243,6 +247,7 @@ def test_wpas_mesh_peer_disconnected(dev):
 def test_wpas_mesh_mode_scan(dev):
     """wpa_supplicant MESH scan support"""
     check_mesh_support(dev[0])
+    dev[0].flush_scan_cache()
     add_open_mesh_network(dev[0])
     add_open_mesh_network(dev[1], beacon_int=175)
 
@@ -270,6 +275,9 @@ def test_wpas_mesh_open(dev, apdev):
     if mode != "mesh":
         raise Exception("Unexpected mode: " + mode)
 
+    peer = dev[1].own_addr()
+    sta1 = dev[0].get_sta(peer)
+
     dev[0].scan(freq="2462")
     bss = dev[0].get_bss(dev[1].own_addr())
     if bss and 'ie' in bss and "ff0724" in bss['ie']:
@@ -279,6 +287,15 @@ def test_wpas_mesh_open(dev, apdev):
             raise Exception("Missing STA HE flag")
         if "[VHT]" in sta:
             raise Exception("Unexpected STA VHT flag")
+
+    time.sleep(1.1)
+    sta2 = dev[0].get_sta(peer)
+    if 'connected_time' not in sta1 or 'connected_time' not in sta2:
+        raise Exception("connected_time not reported for peer")
+    ct1 = int(sta1['connected_time'])
+    ct2 = int(sta2['connected_time'])
+    if ct2 <= ct1:
+        raise Exception("connected_time did not increment")
 
 def test_wpas_mesh_open_no_auto(dev, apdev):
     """wpa_supplicant open MESH network connectivity"""
@@ -601,7 +618,7 @@ def test_wpas_mesh_secure_sae_group_mismatch(dev, apdev):
     id = add_mesh_secure_net(dev[1])
     dev[1].mesh_group_add(id)
 
-    dev[2].request("SET sae_groups 26")
+    dev[2].request("SET sae_groups 20")
     id = add_mesh_secure_net(dev[2])
     dev[2].mesh_group_add(id)
 
@@ -644,11 +661,11 @@ def test_wpas_mesh_secure_sae_group_negotiation(dev, apdev):
     addr1 = dev[1].own_addr()
 
     #dev[0].request("SET sae_groups 21 20 25 26")
-    dev[0].request("SET sae_groups 26")
+    dev[0].request("SET sae_groups 20")
     id = add_mesh_secure_net(dev[0])
     dev[0].mesh_group_add(id)
 
-    dev[1].request("SET sae_groups 19 26")
+    dev[1].request("SET sae_groups 19 20")
     id = add_mesh_secure_net(dev[1])
     dev[1].mesh_group_add(id)
 
@@ -1815,7 +1832,7 @@ def test_mesh_sae_groups_invalid(dev, apdev):
     """Mesh with invalid SAE group configuration"""
     check_mesh_support(dev[0], secure=True)
 
-    dev[0].request("SET sae_groups 26")
+    dev[0].request("SET sae_groups 20")
     id = add_mesh_secure_net(dev[0])
     dev[0].mesh_group_add(id)
 

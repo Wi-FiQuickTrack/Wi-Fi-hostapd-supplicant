@@ -303,6 +303,13 @@ def test_wpas_ctrl_many_networks(dev, apdev):
     """wpa_supplicant ctrl_iface LIST_NETWORKS with huge number of networks"""
     for i in range(1000):
         id = dev[0].add_network()
+    ev = dev[0].wait_event(["CTRL-EVENT-NETWORK-ADDED %d" % id])
+    if ev is None:
+        raise Exception("Network added event not seen for the last network")
+    ev = dev[0].wait_global_event(["CTRL-EVENT-NETWORK-ADDED %d" % id], timeout=10)
+    if ev is None:
+        raise Exception("Network added event (global) not seen for the last network")
+    dev[0].dump_monitor()
     res = dev[0].request("LIST_NETWORKS")
     if str(id) in res:
         raise Exception("Last added network was unexpectedly included")
@@ -313,6 +320,13 @@ def test_wpas_ctrl_many_networks(dev, apdev):
     # power CPU, so increase the command timeout significantly to avoid issues
     # with the test case failing and following reset operation timing out.
     dev[0].request("REMOVE_NETWORK all", timeout=60)
+    ev = dev[0].wait_event(["CTRL-EVENT-NETWORK-REMOVED %d" % id])
+    if ev is None:
+        raise Exception("Network removed event not seen for the last network")
+    ev = dev[0].wait_global_event(["CTRL-EVENT-NETWORK-REMOVED %d" % id], timeout=10)
+    if ev is None:
+        raise Exception("Network removed event (global) not seen for the last network")
+    dev[0].dump_monitor()
 
 @remote_compatible
 def test_wpas_ctrl_dup_network(dev, apdev):
@@ -453,6 +467,14 @@ def test_wpas_ctrl_cred(dev):
     for i in ("11", "1122", "112233445566778899aabbccddeeff00"):
         if "FAIL" not in dev[0].request("SET_CRED " + str(id) + " roaming_consortium " + i):
             raise Exception("Unexpected success on invalid roaming_consortium")
+        if "FAIL" not in dev[0].request("SET_CRED " + str(id) + " home_ois " + '"' + i + '"'):
+            raise Exception("Unexpected success on invalid home_ois")
+        if "FAIL" not in dev[0].request("SET_CRED " + str(id) + " required_home_ois " + '"' + i + '"'):
+            raise Exception("Unexpected success on invalid required_home_ois")
+    if "FAIL" not in dev[0].request("SET_CRED " + str(id) + " home_ois " + '"112233' + 36*",112233" + '"'):
+            raise Exception("Unexpected success on invalid home_ois")
+    if "FAIL" in dev[0].request("SET_CRED " + str(id) + " home_ois " + '"112233' + 35*",112233" + '"'):
+            raise Exception("Unexpected failure on maximum number of home_ois")
 
     dev[0].set_cred(id, "excluded_ssid", "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff")
     if "FAIL" not in dev[0].request("SET_CRED " + str(id) + " excluded_ssid 00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff00"):
@@ -1402,6 +1424,8 @@ def test_wpas_ctrl_driver_event(dev, apdev):
     """wpa_supplicant ctrl_iface DRIVER_EVENT"""
     if "FAIL" not in dev[0].request("DRIVER_EVENT foo"):
         raise Exception("Invalid DRIVER_EVENT accepted")
+    if "OK" not in dev[0].request("DRIVER_EVENT ASSOC reassoc=1 req_ies=0000 resp_ies=0000 resp_frame=0000 beacon_ies=0000 freq=2412 wmm::info_bitmap=0 wmm::uapsd_queues=0 addr=02:02:02:02:02:02 authorized=0 key_replay_ctr=00 ptk_kck=00 ptk_kek=00 subnet_status=0 fils_erp_next_seq_num=0 fils_pmk=00 fils_pmkid=" + 16*"00"):
+        raise Exception("DRIVER_EVENT ASSOC did not succeed")
 
 @remote_compatible
 def test_wpas_ctrl_eapol_rx(dev, apdev):
@@ -2147,3 +2171,11 @@ def test_wpas_ctrl_get_pref_freq_list_override(dev):
     dev[0].set("get_pref_freq_list_override", "")
     res = dev[0].request("GET_PREF_FREQ_LIST STATION").strip()
     logger.info("STATION (without override): " + res)
+
+def test_wpas_ctrl_interface_add_driver_init_failure(dev, apdev):
+    """wpa_supplicant INTERFACE_ADD and driver init failing"""
+    for i in range(1000):
+        res = dev[0].global_request("INTERFACE_ADD FOO")
+        if "FAIL" not in res:
+            raise Exception("Unexpected result: " + res)
+    dev[0].dump_monitor()

@@ -251,6 +251,9 @@ static void mesh_mpm_send_plink_action(struct wpa_supplicant *wpa_s,
 			   HE_MAX_MCS_CAPAB_SIZE +
 			   HE_MAX_PPET_CAPAB_SIZE;
 		buf_len += 3 + sizeof(struct ieee80211_he_operation);
+		if (is_6ghz_op_class(bss->iconf->op_class))
+			buf_len += sizeof(struct ieee80211_he_6ghz_oper_info) +
+				3 + sizeof(struct ieee80211_he_6ghz_band_cap);
 	}
 #endif /* CONFIG_IEEE80211AX */
 	if (type != PLINK_CLOSE)
@@ -303,9 +306,10 @@ static void mesh_mpm_send_plink_action(struct wpa_supplicant *wpa_s,
 		info = (bss->num_plinks > 63 ? 63 : bss->num_plinks) << 1;
 		/* TODO: Add Connected to Mesh Gate/AS subfields */
 		wpabuf_put_u8(buf, info);
-		/* always forwarding & accepting plinks for now */
+		/* Set forwarding based on configuration and always accept
+		 * plinks for now */
 		wpabuf_put_u8(buf, MESH_CAP_ACCEPT_ADDITIONAL_PEER |
-			      MESH_CAP_FORWARDING);
+			      (conf->mesh_fwding ? MESH_CAP_FORWARDING : 0));
 	} else {	/* Peer closing frame */
 		/* IE: Mesh ID */
 		wpabuf_put_u8(buf, WLAN_EID_MESH_ID);
@@ -375,11 +379,14 @@ static void mesh_mpm_send_plink_action(struct wpa_supplicant *wpa_s,
 				HE_MAX_PHY_CAPAB_SIZE +
 				HE_MAX_MCS_CAPAB_SIZE +
 				HE_MAX_PPET_CAPAB_SIZE +
-				3 + sizeof(struct ieee80211_he_operation)];
+				3 + sizeof(struct ieee80211_he_operation) +
+				sizeof(struct ieee80211_he_6ghz_oper_info) +
+				3 + sizeof(struct ieee80211_he_6ghz_band_cap)];
 
 		pos = hostapd_eid_he_capab(bss, he_capa_oper,
 					   IEEE80211_MODE_MESH);
 		pos = hostapd_eid_he_operation(bss, pos);
+		pos = hostapd_eid_he_6ghz_band_cap(bss, pos);
 		wpabuf_put_data(buf, he_capa_oper, pos - he_capa_oper);
 	}
 #endif /* CONFIG_IEEE80211AX */
@@ -749,6 +756,7 @@ static struct sta_info * mesh_mpm_add_peer(struct wpa_supplicant *wpa_s,
 #ifdef CONFIG_IEEE80211AX
 	copy_sta_he_capab(data, sta, IEEE80211_MODE_MESH,
 			  elems->he_capabilities, elems->he_capabilities_len);
+	copy_sta_he_6ghz_capab(data, sta, elems->he_6ghz_band_cap);
 #endif /* CONFIG_IEEE80211AX */
 
 	if (hostapd_get_aid(data, sta) < 0) {
@@ -770,6 +778,7 @@ static struct sta_info * mesh_mpm_add_peer(struct wpa_supplicant *wpa_s,
 	params.vht_capabilities = sta->vht_capabilities;
 	params.he_capab = sta->he_capab;
 	params.he_capab_len = sta->he_capab_len;
+	params.he_6ghz_capab = sta->he_6ghz_capab;
 	params.flags |= WPA_STA_WMM;
 	params.flags_mask |= WPA_STA_AUTHENTICATED;
 	if (conf->security == MESH_CONF_SEC_NONE) {
@@ -870,7 +879,8 @@ static void mesh_mpm_plink_estab(struct wpa_supplicant *wpa_s,
 
 	if (conf->security & MESH_CONF_SEC_AMPE) {
 		wpa_hexdump_key(MSG_DEBUG, "mesh: MTK", sta->mtk, sta->mtk_len);
-		wpa_drv_set_key(wpa_s, wpa_cipher_to_alg(conf->pairwise_cipher),
+		wpa_drv_set_key(wpa_s, -1,
+				wpa_cipher_to_alg(conf->pairwise_cipher),
 				sta->addr, 0, 0, seq, sizeof(seq),
 				sta->mtk, sta->mtk_len,
 				KEY_FLAG_PAIRWISE_RX_TX);
@@ -879,7 +889,8 @@ static void mesh_mpm_plink_estab(struct wpa_supplicant *wpa_s,
 				sta->mgtk_rsc, sizeof(sta->mgtk_rsc));
 		wpa_hexdump_key(MSG_DEBUG, "mesh: RX MGTK",
 				sta->mgtk, sta->mgtk_len);
-		wpa_drv_set_key(wpa_s, wpa_cipher_to_alg(conf->group_cipher),
+		wpa_drv_set_key(wpa_s, -1,
+				wpa_cipher_to_alg(conf->group_cipher),
 				sta->addr, sta->mgtk_key_id, 0,
 				sta->mgtk_rsc, sizeof(sta->mgtk_rsc),
 				sta->mgtk, sta->mgtk_len,
@@ -891,7 +902,7 @@ static void mesh_mpm_plink_estab(struct wpa_supplicant *wpa_s,
 			wpa_hexdump_key(MSG_DEBUG, "mesh: RX IGTK",
 					sta->igtk, sta->igtk_len);
 			wpa_drv_set_key(
-				wpa_s,
+				wpa_s, -1,
 				wpa_cipher_to_alg(conf->mgmt_group_cipher),
 				sta->addr, sta->igtk_key_id, 0,
 				sta->igtk_rsc, sizeof(sta->igtk_rsc),

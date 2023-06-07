@@ -17,7 +17,7 @@ import struct
 import hostapd
 from wpasupplicant import WpaSupplicant
 from tshark import run_tshark
-from utils import alloc_fail, wait_fail_trigger, skip_with_fips, HwsimSkip
+from utils import *
 from hwsim import HWSimRadio
 
 def hs20_ap_params():
@@ -1605,10 +1605,11 @@ def test_gas_failures(dev, apdev):
     wpas = WpaSupplicant(global_iface='/tmp/wpas-wlan5')
     wpas.interface_add("wlan5")
     wpas.scan_for_bss(bssid2, freq="2412")
-    wpas.request("SET preassoc_mac_addr 1111")
-    wpas.request("ANQP_GET " + bssid2 + " 258")
-    ev = wpas.wait_event(["Failed to assign random MAC address for GAS"],
-                         timeout=5)
+    wpas.request("SET preassoc_mac_addr 1")
+    with fail_test(wpas, 1, "random_mac_addr"):
+        wpas.request("ANQP_GET " + bssid2 + " 258")
+        ev = wpas.wait_event(["Failed to assign random MAC address for GAS"],
+                             timeout=5)
     wpas.request("SET preassoc_mac_addr 0")
     if ev is None:
         raise Exception("No random MAC address error seen")
@@ -1641,6 +1642,7 @@ def test_gas_anqp_venue_url(dev, apdev):
     hapd = hostapd.add_ap(apdev[0], params)
     bssid = apdev[0]['bssid']
 
+    dev[0].flush_scan_cache()
     dev[0].scan_for_bss(bssid, freq="2412", force_scan=True)
     if "OK" not in dev[0].request("ANQP_GET " + bssid + " 257,258,277"):
         raise Exception("ANQP_GET command failed")
@@ -1703,6 +1705,7 @@ def test_gas_anqp_venue_url2(dev, apdev):
     hapd = hostapd.add_ap(apdev[0], params)
     bssid = apdev[0]['bssid']
 
+    dev[0].flush_scan_cache()
     dev[0].scan_for_bss(bssid, freq="2412", force_scan=True)
     if "OK" not in dev[0].request("ANQP_GET " + bssid + " 257,258,277"):
         raise Exception("ANQP_GET command failed")
@@ -1759,6 +1762,7 @@ def test_gas_anqp_venue_url_pmf(dev, apdev):
     hapd = hostapd.add_ap(apdev[0], params)
     bssid = apdev[0]['bssid']
 
+    dev[0].flush_scan_cache()
     dev[0].connect("gas/anqp/pmf", psk="12345678", ieee80211w="2",
                    scan_freq="2412")
     if "OK" not in dev[0].request("ANQP_GET " + bssid + " 277"):
@@ -1799,6 +1803,7 @@ def test_gas_anqp_capab_list(dev, apdev):
     hapd = hostapd.add_ap(apdev[0], params)
     bssid = apdev[0]['bssid']
 
+    dev[0].flush_scan_cache()
     dev[0].scan_for_bss(bssid, freq="2412", force_scan=True)
     if "OK" not in dev[0].request("ANQP_GET " + bssid + " 257"):
         raise Exception("ANQP_GET command failed")

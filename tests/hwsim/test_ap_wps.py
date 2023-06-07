@@ -8,7 +8,10 @@ from remotehost import remote_compatible
 from tshark import run_tshark
 import base64
 import binascii
-from Crypto.Cipher import AES
+try:
+    from Cryptodome.Cipher import AES
+except ImportError:
+    from Crypto.Cipher import AES
 import hashlib
 import hmac
 import os
@@ -44,10 +47,12 @@ from wpasupplicant import WpaSupplicant
 from utils import *
 from test_ap_eap import int_eap_server_params
 
-def wps_start_ap(apdev, ssid="test-wps-conf"):
+def wps_start_ap(apdev, ssid="test-wps-conf", extra_cred=None):
     params = {"ssid": ssid, "eap_server": "1", "wps_state": "2",
               "wpa_passphrase": "12345678", "wpa": "2",
               "wpa_key_mgmt": "WPA-PSK", "rsn_pairwise": "CCMP"}
+    if extra_cred:
+        params['extra_cred'] = extra_cred
     return hostapd.add_ap(apdev, params)
 
 @remote_compatible
@@ -1067,6 +1072,43 @@ def test_ap_wps_pbc_overlap_2sta(dev, apdev):
     dev[0].flush_scan_cache()
     dev[1].flush_scan_cache()
 
+def test_ap_wps_pbc_session_workaround(dev, apdev):
+    """WPS PBC session overlap workaround"""
+    ssid = "test-wps-pbc-overlap"
+    hapd = hostapd.add_ap(apdev[0],
+                          {"ssid": ssid, "eap_server": "1", "wps_state": "2",
+                           "wpa_passphrase": "12345678", "wpa": "2",
+                           "wpa_key_mgmt": "WPA-PSK", "rsn_pairwise": "CCMP"})
+    bssid = hapd.own_addr()
+    hapd.request("WPS_PBC")
+    dev[0].scan_for_bss(bssid, freq="2412")
+    dev[0].request("WPS_PBC " + bssid)
+    dev[0].wait_connected(timeout=30)
+
+    dev[0].request("REMOVE_NETWORK all")
+    dev[0].wait_disconnected(timeout=30)
+    dev[0].dump_monitor()
+    # Trigger AP/Registrar to ignore PBC activation immediately after
+    # successfully completed provisioning
+    dev[0].request("WPS_PBC " + bssid)
+    ev = dev[0].wait_event(["CTRL-EVENT-SCAN-RESULTS"], timeout=10)
+    if ev is None:
+        raise Exception("No scan results reported")
+    dev[0].request("WPS_CANCEL")
+    dev[0].dump_monitor()
+
+    # Verify that PBC session overlap does not prevent connection
+    hapd.request("WPS_PBC")
+    dev[1].scan_for_bss(bssid, freq="2412")
+    dev[1].request("WPS_PBC " + bssid)
+    dev[1].wait_connected()
+    dev[1].request("REMOVE_NETWORK all")
+    dev[1].wait_disconnected()
+
+    hapd.request("DISABLE")
+    dev[0].flush_scan_cache()
+    dev[1].flush_scan_cache()
+
 @remote_compatible
 def test_ap_wps_cancel(dev, apdev):
     """WPS AP cancelling enabled config method"""
@@ -1106,6 +1148,7 @@ def test_ap_wps_cancel(dev, apdev):
     bss = dev[0].get_bss(apdev[0]['bssid'])
     if "[WPS-AUTH]" in bss['flags']:
         raise Exception("WPS-AUTH flag not cleared")
+    dev[0].flush_scan_cache()
 
 def test_ap_wps_er_add_enrollee(dev, apdev):
     """WPS ER configuring AP and adding a new enrollee using PIN"""
@@ -3921,6 +3964,7 @@ def test_ap_wps_priority(dev, apdev):
     logger.info("WPS provisioning step")
     pin = dev[0].wps_read_pin()
     hapd.request("WPS_PIN any " + pin)
+    dev[0].flush_scan_cache()
     dev[0].scan_for_bss(apdev[0]['bssid'], freq="2412")
     dev[0].dump_monitor()
     try:
@@ -4358,10 +4402,12 @@ def wps_er_stop(dev, sock, server, on_alloc_fail=False):
             raise Exception("No WPS-ER-AP-REMOVE event on max-age timeout")
     dev.request("WPS_ER_STOP")
 
-def run_wps_er_proto_test(dev, handler, no_event_url=False, location_url=None):
+def run_wps_er_proto_test(dev, handler, no_event_url=False, location_url=None,
+                          max_age=1):
     try:
         uuid = '27ea801a-9e5c-4e73-bd82-f89cbcd10d7e'
-        server, sock = wps_er_start(dev, handler, location_url=location_url)
+        server, sock = wps_er_start(dev, handler, location_url=location_url,
+                                    max_age=max_age)
         global wps_event_url
         wps_event_url = None
         server.handle_request()
@@ -5025,14 +5071,14 @@ def _test_ap_wps_http_timeout(dev, apdev):
     sock.connect(addr)
     sock.send(b"G")
 
-    class DummyServer(StreamRequestHandler):
+    class StubServer(StreamRequestHandler):
         def handle(self):
-            logger.debug("DummyServer - start 31 sec wait")
+            logger.debug("StubServer - start 31 sec wait")
             time.sleep(31)
-            logger.debug("DummyServer - wait done")
+            logger.debug("StubServer - wait done")
 
     logger.debug("Start WPS ER")
-    server, sock2 = wps_er_start(dev[0], DummyServer, max_age=40,
+    server, sock2 = wps_er_start(dev[0], StubServer, max_age=40,
                                  wait_m_search=True)
 
     logger.debug("Start server to accept, but not complete, HTTP connection from WPS ER")
@@ -5104,6 +5150,15 @@ def test_ap_wps_er_http_client(dev, apdev):
             self.wfile.write(b"GET / HTTP/1.1\r\n\r\n")
     run_wps_er_proto_test(dev[0], WPSAPHTTPServer_req_as_resp,
                           no_event_url=True)
+
+def test_ap_wps_er_http_client_timeout(dev, apdev):
+    """WPS ER and HTTP client timeout"""
+    class WPSAPHTTPServer_timeout(WPSAPHTTPServer):
+        def handle_upnp_info(self):
+            time.sleep(31)
+            self.wfile.write(b"GET / HTTP/1.1\r\n\r\n")
+    run_wps_er_proto_test(dev[0], WPSAPHTTPServer_timeout,
+                          no_event_url=True, max_age=60)
 
 def test_ap_wps_init_oom(dev, apdev):
     """wps_init OOM cases"""
@@ -10081,8 +10136,8 @@ def test_ap_wps_tkip(dev, apdev):
     if "FAIL" not in hapd.request("WPS_PBC"):
         raise Exception("WPS unexpectedly enabled")
 
-def test_ap_wps_conf_dummy_cred(dev, apdev):
-    """WPS PIN provisioning with configured AP using dummy cred"""
+def test_ap_wps_conf_stub_cred(dev, apdev):
+    """WPS PIN provisioning with configured AP using stub cred"""
     ssid = "test-wps-conf"
     hapd = hostapd.add_ap(apdev[0],
                           {"ssid": ssid, "eap_server": "1", "wps_state": "2",
@@ -10092,7 +10147,7 @@ def test_ap_wps_conf_dummy_cred(dev, apdev):
     dev[0].scan_for_bss(apdev[0]['bssid'], freq="2412")
     dev[0].dump_monitor()
     try:
-        hapd.set("wps_testing_dummy_cred", "1")
+        hapd.set("wps_testing_stub_cred", "1")
         dev[0].request("WPS_PIN " + apdev[0]['bssid'] + " 12345670")
         for i in range(1, 3):
             ev = dev[0].wait_event(["WPS-CRED-RECEIVED"], timeout=15)
@@ -10100,7 +10155,7 @@ def test_ap_wps_conf_dummy_cred(dev, apdev):
                 raise Exception("WPS credential %d not received" % i)
         dev[0].wait_connected(timeout=30)
     finally:
-        hapd.set("wps_testing_dummy_cred", "0")
+        hapd.set("wps_testing_stub_cred", "0")
 
 def test_ap_wps_rf_bands(dev, apdev):
     """WPS and wps_rf_bands configuration"""
@@ -10379,6 +10434,39 @@ def run_ap_wps_conf_and_sae(dev, apdev):
     dev[1].connect(ssid, psk="12345678", scan_freq="2412", proto="WPA2",
                    key_mgmt="WPA-PSK", ieee80211w="0")
 
+def test_ap_wps_conf_and_sae_h2e(dev, apdev):
+    """WPS PIN provisioning with configured AP using PSK+SAE(H2E)"""
+    try:
+        run_ap_wps_conf_and_sae_h2e(dev, apdev)
+    finally:
+        dev[0].set("wps_cred_add_sae", "0")
+        dev[0].set("sae_pwe", "0")
+
+def run_ap_wps_conf_and_sae_h2e(dev, apdev):
+    check_sae_capab(dev[0])
+    ssid = "test-wps-conf-sae"
+    hapd = hostapd.add_ap(apdev[0],
+                          {"ssid": ssid, "eap_server": "1", "wps_state": "2",
+                           "wpa_passphrase": "12345678", "wpa": "2",
+                           "ieee80211w": "1", "sae_require_mfp": "1",
+                           "sae_pwe": "1",
+                           "wpa_key_mgmt": "WPA-PSK SAE",
+                           "rsn_pairwise": "CCMP"})
+
+    dev[0].set("wps_cred_add_sae", "1")
+    dev[0].set("sae_pwe", "1")
+    dev[0].request("SET sae_groups ")
+    dev[0].scan_for_bss(apdev[0]['bssid'], freq="2412")
+    pin = dev[0].wps_read_pin()
+    hapd.request("WPS_PIN any " + pin)
+    dev[0].request("WPS_PIN " + apdev[0]['bssid'] + " " + pin)
+    dev[0].wait_connected(timeout=30)
+    status = dev[0].get_status()
+    if status['key_mgmt'] != "SAE":
+        raise Exception("SAE not used")
+    if 'pmf' not in status or status['pmf'] != "1":
+        raise Exception("PMF not enabled")
+
 def test_ap_wps_reg_config_and_sae(dev, apdev):
     """WPS registrar configuring an AP using AP PIN and using PSK+SAE"""
     try:
@@ -10464,3 +10552,88 @@ def run_ap_wps_ap_timeout(dev, apdev, cmd):
     logger.info("BSS after timeout: " + str(bss))
     if bss['ie'].endswith("0106ffffffffffff"):
         raise Exception("Authorized MAC not removed")
+
+def test_ap_wps_er_unsubscribe_errors(dev, apdev):
+    """WPS ER and UNSUBSCRIBE errors"""
+    start_wps_ap(apdev[0])
+    tests = [(1, "http_client_url_parse;wps_er_ap_unsubscribe"),
+             (1, "wpabuf_alloc;wps_er_ap_unsubscribe"),
+             (1, "http_client_addr;wps_er_ap_unsubscribe")]
+    try:
+        for count, func in tests:
+            start_wps_er(dev[0])
+            with alloc_fail(dev[0], count, func):
+                dev[0].request("WPS_ER_STOP")
+            dev[0].request("REMOVE_NETWORK all")
+            dev[0].wait_disconnected()
+            dev[0].dump_monitor()
+    finally:
+        dev[0].request("WPS_ER_STOP")
+
+def start_wps_ap(apdev):
+    ssid = "wps-er-ap-config"
+    ap_pin = "12345670"
+    ap_uuid = "27ea801a-9e5c-4e73-bd82-f89cbcd10d7e"
+    params = {"ssid": ssid, "eap_server": "1", "wps_state": "2",
+              "wpa_passphrase": "12345678", "wpa": "2",
+              "wpa_key_mgmt": "WPA-PSK", "rsn_pairwise": "CCMP",
+              "device_name": "Wireless AP", "manufacturer": "Company",
+              "model_name": "WAP", "model_number": "123",
+              "serial_number": "12345", "device_type": "6-0050F204-1",
+              "os_version": "01020300",
+              "config_methods": "label push_button",
+              "ap_pin": ap_pin, "uuid": ap_uuid, "upnp_iface": "lo"}
+    hostapd.add_ap(apdev, params)
+
+def start_wps_er(dev):
+    ssid = "wps-er-ap-config"
+    dev.connect(ssid, psk="12345678", scan_freq="2412")
+    dev.request("WPS_ER_START ifname=lo")
+    ev = dev.wait_event(["WPS-ER-AP-ADD"], timeout=15)
+    if ev is None:
+        raise Exception("AP discovery timed out")
+
+def test_ap_wps_registrar_init_errors(dev, apdev):
+    """WPS Registrar init errors"""
+    hapd = wps_start_ap(apdev[0], extra_cred="wps-mixed-cred")
+    hapd.disable()
+    tests = [(1, "wps_registrar_init"),
+             (1, "wpabuf_alloc_copy;wps_registrar_init"),
+             (1, "wps_set_ie;wps_registrar_init")]
+    for count, func in tests:
+        with alloc_fail(hapd, count, func):
+            if "FAIL" not in hapd.request("ENABLE"):
+                raise Exception("ENABLE succeeded unexpectedly")
+
+def test_ap_wps_config_without_wps(dev, apdev):
+    """AP configuration attempt using wps_config when WPS is disabled"""
+    ssid = "test-wps-init-config"
+    hapd = hostapd.add_ap(apdev[0], {"ssid": ssid})
+    if "FAIL" not in hapd.request("WPS_CONFIG " + binascii.hexlify(ssid.encode()).decode() + " WPA2PSK CCMP " + binascii.hexlify(b"12345678").decode()):
+        raise Exception("WPS_CONFIG command succeeded unexpectedly")
+
+def test_ap_wps_passive_scan(dev, apdev):
+    """WPS PBC provisioning with configured AP and passive scanning"""
+    ssid = "test-wps-conf"
+    hapd = hostapd.add_ap(apdev[0],
+                          {"ssid": ssid, "eap_server": "1", "wps_state": "2",
+                           "wpa_passphrase": "12345678", "wpa": "2",
+                           "wpa_key_mgmt": "WPA-PSK", "rsn_pairwise": "CCMP"})
+    dev[0].scan_for_bss(hapd.own_addr(), freq="2412")
+    hapd.request("WPS_PBC")
+    dev[0].scan_for_bss(hapd.own_addr(), 2412, force_scan=True, passive=True)
+    hapd.set("ext_mgmt_frame_handling", "1")
+    dev[0].dump_monitor()
+    dev[0].request("WPS_PBC " + hapd.own_addr())
+    req = None
+    for i in range(0, 10):
+        req = hapd.mgmt_rx()
+        if req is None:
+            raise Exception("MGMT RX wait timed out")
+        if req['subtype'] == 11:
+            break
+        req = None
+    if not req:
+        raise Exception("Authentication frame not received")
+    hapd.set("ext_mgmt_frame_handling", "0")
+    dev[0].wait_connected(timeout=30)

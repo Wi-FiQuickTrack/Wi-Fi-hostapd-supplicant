@@ -178,6 +178,9 @@ static void wpa_supplicant_ctrl_iface_receive(int sock, void *eloop_ctx,
 		else
 			reply_len = 2;
 	} else {
+		sockaddr_print(wpas_ctrl_cmd_debug_level(buf),
+			       "Control interface recv command from:",
+			       &from, fromlen);
 		reply_buf = wpa_supplicant_ctrl_iface_process(wpa_s, buf,
 							      &reply_len);
 		reply = reply_buf;
@@ -800,11 +803,51 @@ static int wpas_ctrl_iface_reinit(struct wpa_supplicant *wpa_s,
 }
 
 
-void wpa_supplicant_ctrl_iface_deinit(struct ctrl_iface_priv *priv)
+static void
+wpas_global_ctrl_iface_flush_queued_msg(struct wpa_global *global,
+					struct wpa_supplicant *wpa_s)
+{
+	struct ctrl_iface_global_priv *gpriv;
+	struct ctrl_iface_msg *msg, *prev_msg;
+	unsigned int count = 0;
+
+	if (!global || !global->ctrl_iface)
+		return;
+
+	gpriv = global->ctrl_iface;
+	dl_list_for_each_safe(msg, prev_msg, &gpriv->msg_queue,
+			      struct ctrl_iface_msg, list) {
+		if (msg->wpa_s == wpa_s) {
+			count++;
+			dl_list_del(&msg->list);
+			os_free(msg);
+		}
+	}
+
+	if (count) {
+		wpa_printf(MSG_DEBUG,
+			   "CTRL: Dropped %u pending message(s) for interface that is being removed",
+			count);
+	}
+}
+
+
+void wpa_supplicant_ctrl_iface_deinit(struct wpa_supplicant *wpa_s,
+				      struct ctrl_iface_priv *priv)
 {
 	struct wpa_ctrl_dst *dst, *prev;
 	struct ctrl_iface_msg *msg, *prev_msg;
 	struct ctrl_iface_global_priv *gpriv;
+
+	if (!priv) {
+		/* Control interface has not yet been initialized, so there is
+		 * nothing to deinitialize here. However, there might be a
+		 * pending message for this interface, so get rid of any such
+		 * entry before completing interface removal. */
+		wpas_global_ctrl_iface_flush_queued_msg(wpa_s->global, wpa_s);
+		eloop_cancel_timeout(wpas_ctrl_msg_queue_timeout, wpa_s, NULL);
+		return;
+	}
 
 	if (priv->sock > -1) {
 		char *fname;
@@ -877,6 +920,7 @@ free_dst:
 			}
 		}
 	}
+	wpas_global_ctrl_iface_flush_queued_msg(wpa_s->global, wpa_s);
 	eloop_cancel_timeout(wpas_ctrl_msg_queue_timeout, priv->wpa_s, NULL);
 	os_free(priv);
 }

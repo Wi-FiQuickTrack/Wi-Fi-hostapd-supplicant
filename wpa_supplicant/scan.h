@@ -16,6 +16,7 @@
  */
 #define DEFAULT_NOISE_FLOOR_2GHZ (-89)
 #define DEFAULT_NOISE_FLOOR_5GHZ (-92)
+#define DEFAULT_NOISE_FLOOR_6GHZ (-92)
 
 /*
  * Channels with a great SNR can operate at full rate. What is a great SNR?
@@ -29,7 +30,8 @@
  */
 #define GREAT_SNR 25
 
-#define IS_5GHZ(n) (n > 4000)
+#define IS_2P4GHZ(n) (n >= 2412 && n <= 2484)
+#define IS_5GHZ(n) (n > 4000 && n < 5895)
 
 int wpa_supplicant_enabled_networks(struct wpa_supplicant *wpa_s);
 void wpa_supplicant_req_scan(struct wpa_supplicant *wpa_s, int sec, int usec);
@@ -49,6 +51,7 @@ wpa_supplicant_get_scan_results(struct wpa_supplicant *wpa_s,
 				struct scan_info *info, int new_scan);
 int wpa_supplicant_update_scan_results(struct wpa_supplicant *wpa_s);
 const u8 * wpa_scan_get_ie(const struct wpa_scan_res *res, u8 ie);
+const u8 * wpa_scan_get_ml_ie(const struct wpa_scan_res *res, u8 type);
 const u8 * wpa_scan_get_vendor_ie(const struct wpa_scan_res *res,
 				  u32 vendor_type);
 const u8 * wpa_scan_get_vendor_ie_beacon(const struct wpa_scan_res *res,
@@ -84,11 +87,12 @@ void scan_est_throughput(struct wpa_supplicant *wpa_s,
 			 struct wpa_scan_res *res);
 unsigned int wpas_get_est_tpt(const struct wpa_supplicant *wpa_s,
 			      const u8 *ies, size_t ies_len, int rate,
-			      int snr);
+			      int snr, int freq);
 void wpa_supplicant_set_default_scan_ies(struct wpa_supplicant *wpa_s);
 int wpa_add_scan_freqs_list(struct wpa_supplicant *wpa_s,
 			    enum hostapd_hw_mode band,
 			    struct wpa_driver_scan_params *params,
-			    bool is_6ghz);
+			    bool is_6ghz, bool only_6ghz_psc,
+			    bool exclude_radar);
 
 #endif /* SCAN_H */

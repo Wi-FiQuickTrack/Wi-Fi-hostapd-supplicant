@@ -133,6 +133,12 @@ def check_fils_sk_pfs_capa(dev):
     if capa is None or "FILS-SK-PFS" not in capa:
         raise HwsimSkip("FILS-SK-PFS not supported")
 
+def check_imsi_privacy_support(dev):
+    tls = dev.request("GET tls_library")
+    if tls.startswith("OpenSSL"):
+        return
+    raise HwsimSkip("IMSI privacy not supported with this TLS library: " + tls)
+
 def check_tls_tod(dev):
     tls = dev.request("GET tls_library")
     if not tls.startswith("OpenSSL") and not tls.startswith("internal"):
@@ -303,12 +309,4 @@ def disable_ipv6(fn):
         finally:
             sysctl_write('net.ipv6.conf.all.disable_ipv6=0')
             sysctl_write('net.ipv6.conf.default.disable_ipv6=0')
-    return cloned_wrapper(wrapper, fn)
-
-def reset_ignore_old_scan_res(fn):
-    def wrapper(dev, apdev, params):
-        try:
-            var_arg_call(fn, dev, apdev, params)
-        finally:
-            dev[0].set("ignore_old_scan_res", "0")
     return cloned_wrapper(wrapper, fn)

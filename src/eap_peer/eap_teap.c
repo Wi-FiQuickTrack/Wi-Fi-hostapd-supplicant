@@ -319,6 +319,13 @@ static int eap_teap_init_phase2_method(struct eap_sm *sm,
 	if (!data->phase2_method)
 		return -1;
 
+	/* While RFC 7170 does not describe this, EAP-TEAP has been deployed
+	 * with implementations that use the EAP-FAST-MSCHAPv2, instead of the
+	 * EAP-MSCHAPv2, way of deriving the MSK for IMSK. Use that design here
+	 * to interoperate.
+	 */
+	sm->eap_fast_mschapv2 = true;
+
 	sm->init_phase2 = 1;
 	data->phase2_priv = data->phase2_method->init(sm);
 	sm->init_phase2 = 0;
@@ -1298,6 +1305,33 @@ static int eap_teap_process_decrypted(struct eap_sm *sm,
 		goto done;
 	}
 
+	if (tlv.crypto_binding) {
+		if (tlv.iresult != TEAP_STATUS_SUCCESS &&
+		    tlv.result != TEAP_STATUS_SUCCESS) {
+			wpa_printf(MSG_DEBUG,
+				   "EAP-TEAP: Unexpected Crypto-Binding TLV without Result TLV or Intermediate-Result TLV indicating success");
+			failed = 1;
+			error = TEAP_ERROR_UNEXPECTED_TLVS_EXCHANGED;
+			goto done;
+		}
+
+		tmp = eap_teap_process_crypto_binding(sm, data, ret,
+						      tlv.crypto_binding,
+						      tlv.crypto_binding_len);
+		if (!tmp) {
+			failed = 1;
+			error = TEAP_ERROR_TUNNEL_COMPROMISE_ERROR;
+		} else {
+			resp = wpabuf_concat(resp, tmp);
+			if (tlv.result == TEAP_STATUS_SUCCESS && !failed)
+				data->result_success_done = 1;
+			if (tlv.iresult == TEAP_STATUS_SUCCESS && !failed) {
+				data->inner_method_done = 0;
+				data->iresult_verified = 1;
+			}
+		}
+	}
+
 	if (tlv.identity_type == TEAP_IDENTITY_TYPE_MACHINE) {
 		struct eap_peer_config *config = eap_get_config(sm);
 
@@ -1350,33 +1384,6 @@ static int eap_teap_process_decrypted(struct eap_sm *sm,
 			if (tlv.iresult == TEAP_STATUS_FAILURE)
 				failed = 1;
 			iresult_added = 1;
-		}
-	}
-
-	if (tlv.crypto_binding) {
-		if (tlv.iresult != TEAP_STATUS_SUCCESS &&
-		    tlv.result != TEAP_STATUS_SUCCESS) {
-			wpa_printf(MSG_DEBUG,
-				   "EAP-TEAP: Unexpected Crypto-Binding TLV without Result TLV or Intermediate-Result TLV indicating success");
-			failed = 1;
-			error = TEAP_ERROR_UNEXPECTED_TLVS_EXCHANGED;
-			goto done;
-		}
-
-		tmp = eap_teap_process_crypto_binding(sm, data, ret,
-						      tlv.crypto_binding,
-						      tlv.crypto_binding_len);
-		if (!tmp) {
-			failed = 1;
-			error = TEAP_ERROR_TUNNEL_COMPROMISE_ERROR;
-		} else {
-			resp = wpabuf_concat(resp, tmp);
-			if (tlv.result == TEAP_STATUS_SUCCESS && !failed)
-				data->result_success_done = 1;
-			if (tlv.iresult == TEAP_STATUS_SUCCESS && !failed) {
-				data->inner_method_done = 0;
-				data->iresult_verified = 1;
-			}
 		}
 	}
 
@@ -1760,8 +1767,8 @@ static int eap_teap_process_start(struct eap_sm *sm,
 
 
 #ifdef CONFIG_TESTING_OPTIONS
-static struct wpabuf * eap_teap_add_dummy_outer_tlvs(struct eap_teap_data *data,
-						     struct wpabuf *resp)
+static struct wpabuf * eap_teap_add_stub_outer_tlvs(struct eap_teap_data *data,
+						    struct wpabuf *resp)
 {
 	struct wpabuf *resp2;
 	u16 len;
@@ -1775,11 +1782,11 @@ static struct wpabuf * eap_teap_add_dummy_outer_tlvs(struct eap_teap_data *data,
 		return NULL;
 	}
 
-	/* Outer TLVs (dummy Vendor-Specific TLV for testing) */
+	/* Outer TLVs (stub Vendor-Specific TLV for testing) */
 	wpabuf_put_be16(data->peer_outer_tlvs, TEAP_TLV_VENDOR_SPECIFIC);
 	wpabuf_put_be16(data->peer_outer_tlvs, 4);
 	wpabuf_put_be32(data->peer_outer_tlvs, EAP_VENDOR_HOSTAP);
-	wpa_hexdump_buf(MSG_DEBUG, "EAP-TEAP: TESTING - Add dummy Outer TLVs",
+	wpa_hexdump_buf(MSG_DEBUG, "EAP-TEAP: TESTING - Add stub Outer TLVs",
 			data->peer_outer_tlvs);
 
 	wpa_hexdump_buf(MSG_DEBUG,
@@ -1986,7 +1993,7 @@ static struct wpabuf * eap_teap_process(struct eap_sm *sm, void *priv,
 #ifdef CONFIG_TESTING_OPTIONS
 	if (data->test_outer_tlvs && res == 0 && resp &&
 	    (flags & EAP_TLS_FLAGS_START) && wpabuf_len(resp) >= 6)
-		resp = eap_teap_add_dummy_outer_tlvs(data, resp);
+		resp = eap_teap_add_stub_outer_tlvs(data, resp);
 #endif /* CONFIG_TESTING_OPTIONS */
 
 	return resp;

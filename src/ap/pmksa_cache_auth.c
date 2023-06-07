@@ -40,6 +40,7 @@ static void _pmksa_cache_free_entry(struct rsn_pmksa_cache_entry *entry)
 {
 	os_free(entry->vlan_desc);
 	os_free(entry->identity);
+	os_free(entry->dpp_pkhash);
 	wpabuf_free(entry->cui);
 #ifndef CONFIG_NO_RADIUS
 	radius_free_class(&entry->radius_class);
@@ -516,7 +517,8 @@ struct rsn_pmksa_cache_entry * pmksa_cache_get_okc(
 	for (entry = pmksa->pmksa; entry; entry = entry->next) {
 		if (os_memcmp(entry->spa, spa, ETH_ALEN) != 0)
 			continue;
-		if (wpa_key_mgmt_sae(entry->akmp)) {
+		if (wpa_key_mgmt_sae(entry->akmp) ||
+		    wpa_key_mgmt_fils(entry->akmp)) {
 			if (os_memcmp(entry->pmkid, pmkid, PMKID_LEN) == 0)
 				return entry;
 			continue;

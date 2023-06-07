@@ -92,6 +92,15 @@ extern "C" {
 #define WPA_EVENT_CHANNEL_SWITCH_STARTED "CTRL-EVENT-STARTED-CHANNEL-SWITCH "
 /** Channel switch (followed by freq=<MHz> and other channel parameters) */
 #define WPA_EVENT_CHANNEL_SWITCH "CTRL-EVENT-CHANNEL-SWITCH "
+/** MLO link channel switch started (followed by freq=<MHz> and other channel
+ * parameters)
+ */
+#define WPA_EVENT_LINK_CHANNEL_SWITCH_STARTED \
+	"CTRL-EVENT-STARTED-LINK-CHANNEL-SWITCH "
+/** MLO link channel switch (followed by freq=<MHz> and other channel
+ * parameters)
+ */
+#define WPA_EVENT_LINK_CHANNEL_SWITCH "CTRL-EVENT-LINK-CHANNEL-SWITCH "
 /** SAE authentication failed due to unknown password identifier */
 #define WPA_EVENT_SAE_UNKNOWN_PASSWORD_IDENTIFIER \
 	"CTRL-EVENT-SAE-UNKNOWN-PASSWORD-IDENTIFIER "
@@ -130,6 +139,10 @@ extern "C" {
 #define WPA_EVENT_AVOID_FREQ "CTRL-EVENT-AVOID-FREQ "
 /** Security association query response received */
 #define WPA_EVENT_SAQ_RESP "CTRL-EVENT-SAQ-RESP "
+/** A new network profile was added (followed by network entry id) */
+#define WPA_EVENT_NETWORK_ADDED "CTRL-EVENT-NETWORK-ADDED "
+/** A network profile was removed (followed by prior network entry id) */
+#define WPA_EVENT_NETWORK_REMOVED "CTRL-EVENT-NETWORK-REMOVED "
 /** Result of MSCS setup */
 #define WPA_EVENT_MSCS_RESULT "CTRL-EVENT-MSCS-RESULT "
 /** WPS overlap detected in PBC mode */
@@ -161,6 +174,10 @@ extern "C" {
 #define WPS_EVENT_ENROLLEE_SEEN "WPS-ENROLLEE-SEEN "
 
 #define WPS_EVENT_OPEN_NETWORK "WPS-OPEN-NETWORK "
+/** Result of SCS setup */
+#define WPA_EVENT_SCS_RESULT "CTRL-EVENT-SCS-RESULT "
+/* Event indicating DSCP policy */
+#define WPA_EVENT_DSCP_POLICY "CTRL-EVENT-DSCP-POLICY "
 
 /* WPS ER events */
 #define WPS_EVENT_ER_AP_ADD "WPS-ER-AP-ADD "
@@ -208,6 +225,10 @@ extern "C" {
 #define DPP_EVENT_BAND_SUPPORT "DPP-BAND-SUPPORT "
 #define DPP_EVENT_CSR "DPP-CSR "
 #define DPP_EVENT_CHIRP_RX "DPP-CHIRP-RX "
+#define DPP_EVENT_CONF_NEEDED "DPP-CONF-NEEDED "
+#define DPP_EVENT_PB_STATUS "DPP-PB-STATUS "
+#define DPP_EVENT_PB_RESULT "DPP-PB-RESULT "
+#define DPP_EVENT_RELAY_NEEDS_CONTROLLER "DPP-RELAY-NEEDS-CONTROLLER "
 
 /* MESH events */
 #define MESH_GROUP_STARTED "MESH-GROUP-STARTED "
@@ -361,6 +382,9 @@ extern "C" {
 #define P2P_EVENT_LISTEN_OFFLOAD_STOP "P2P-LISTEN-OFFLOAD-STOPPED "
 #define P2P_LISTEN_OFFLOAD_STOP_REASON "P2P-LISTEN-OFFLOAD-STOP-REASON "
 
+/* BSS Transition Management Query frame received */
+#define BSS_TM_QUERY "BSS-TM-QUERY "
+
 /* BSS Transition Management Response frame received */
 #define BSS_TM_RESP "BSS-TM-RESP "
 
@@ -449,6 +473,8 @@ extern "C" {
 #define WPA_BSS_MASK_UPDATE_IDX		BIT(22)
 #define WPA_BSS_MASK_BEACON_IE		BIT(23)
 #define WPA_BSS_MASK_FILS_INDICATION	BIT(24)
+#define WPA_BSS_MASK_RNR		BIT(25)
+#define WPA_BSS_MASK_ML			BIT(26)
 
 
 /* VENDOR_ELEM_* frame id values */

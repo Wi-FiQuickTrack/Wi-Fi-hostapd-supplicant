@@ -937,6 +937,95 @@ void wpas_dbus_signal_mesh_peer_disconnected(struct wpa_supplicant *wpa_s,
 #endif /* CONFIG_MESH */
 
 
+#ifdef CONFIG_INTERWORKING
+
+void wpas_dbus_signal_interworking_ap_added(struct wpa_supplicant *wpa_s,
+					    struct wpa_bss *bss,
+					    struct wpa_cred *cred,
+					    const char *type,
+					    int excluded,
+					    int bh,
+					    int bss_load,
+					    int conn_capab)
+{
+	struct wpas_dbus_priv *iface;
+	DBusMessage *msg;
+	DBusMessageIter iter, dict_iter;
+	char bss_path[WPAS_DBUS_OBJECT_PATH_MAX], *bss_obj_path;
+	char cred_path[WPAS_DBUS_OBJECT_PATH_MAX], *cred_obj_path;
+
+	iface = wpa_s->global->dbus;
+
+	/* Do nothing if the control interface is not turned on */
+	if (!iface || !wpa_s->dbus_new_path)
+		return;
+
+	msg = dbus_message_new_signal(wpa_s->dbus_new_path,
+				      WPAS_DBUS_NEW_IFACE_INTERFACE,
+				      "InterworkingAPAdded");
+	if (!msg)
+		return;
+
+	os_snprintf(bss_path, WPAS_DBUS_OBJECT_PATH_MAX,
+		    "%s/" WPAS_DBUS_NEW_BSSIDS_PART "/%u",
+		    wpa_s->dbus_new_path, bss->id);
+	bss_obj_path = bss_path;
+
+	os_snprintf(cred_path, WPAS_DBUS_OBJECT_PATH_MAX,
+		    "%s/" WPAS_DBUS_NEW_CREDENTIALS_PART "/%u",
+		    wpa_s->dbus_new_path, cred->id);
+	cred_obj_path = cred_path;
+
+	dbus_message_iter_init_append(msg, &iter);
+	if (!dbus_message_iter_append_basic(&iter, DBUS_TYPE_OBJECT_PATH,
+					    &bss_obj_path) ||
+	    !dbus_message_iter_append_basic(&iter, DBUS_TYPE_OBJECT_PATH,
+					    &cred_obj_path) ||
+	    !wpa_dbus_dict_open_write(&iter, &dict_iter) ||
+	    !wpa_dbus_dict_append_string(&dict_iter, "type", type) ||
+	    !wpa_dbus_dict_append_int32(&dict_iter, "excluded", excluded) ||
+	    !wpa_dbus_dict_append_int32(&dict_iter, "priority",
+					cred->priority) ||
+	    !wpa_dbus_dict_append_int32(&dict_iter, "sp_priority",
+					cred->sp_priority) ||
+	    !wpa_dbus_dict_append_int32(&dict_iter, "below_min_backhaul", bh) ||
+	    !wpa_dbus_dict_append_int32(&dict_iter, "over_max_bss_load",
+					bss_load) ||
+	    !wpa_dbus_dict_append_int32(&dict_iter, "conn_capab_missing",
+					conn_capab) ||
+	    !wpa_dbus_dict_close_write(&iter, &dict_iter))
+		wpa_printf(MSG_ERROR, "dbus: Failed to construct signal");
+	else
+		dbus_connection_send(iface->con, msg, NULL);
+	dbus_message_unref(msg);
+}
+
+
+void wpas_dbus_signal_interworking_select_done(struct wpa_supplicant *wpa_s)
+{
+	struct wpas_dbus_priv *iface;
+	DBusMessage *msg;
+
+	iface = wpa_s->global->dbus;
+
+	/* Do nothing if the control interface is not turned on */
+	if (!iface || !wpa_s->dbus_new_path)
+		return;
+
+	msg = dbus_message_new_signal(wpa_s->dbus_new_path,
+				      WPAS_DBUS_NEW_IFACE_INTERFACE,
+				      "InterworkingSelectDone");
+	if (!msg)
+		return;
+
+	dbus_connection_send(iface->con, msg, NULL);
+
+	dbus_message_unref(msg);
+}
+
+#endif /* CONFIG_INTERWORKING */
+
+
 void wpas_dbus_signal_certification(struct wpa_supplicant *wpa_s,
 				    int depth, const char *subject,
 				    const char *altsubject[],
@@ -2255,6 +2344,12 @@ void wpas_dbus_signal_prop_changed(struct wpa_supplicant *wpa_s,
 	case WPAS_DBUS_PROP_BSS_TM_STATUS:
 		prop = "BSSTMStatus";
 		break;
+	case WPAS_DBUS_PROP_MAC_ADDRESS:
+		prop = "MACAddress";
+		break;
+	case WPAS_DBUS_PROP_SIGNAL_CHANGE:
+		prop = "SignalChange";
+		break;
 	default:
 		wpa_printf(MSG_ERROR, "dbus: %s: Unknown Property value %d",
 			   __func__, property);
@@ -3570,6 +3665,35 @@ static const struct wpa_dbus_method_desc wpas_dbus_interface_methods[] = {
 		  END_ARGS
 	  }
 	},
+#ifdef CONFIG_INTERWORKING
+	{ "AddCred", WPAS_DBUS_NEW_IFACE_INTERFACE,
+	  (WPADBusMethodHandler) wpas_dbus_handler_add_cred,
+	  {
+		  { "args", "a{sv}", ARG_IN },
+		  { "path", "o", ARG_OUT },
+		  END_ARGS
+	  }
+	},
+	{ "RemoveCred", WPAS_DBUS_NEW_IFACE_INTERFACE,
+	  (WPADBusMethodHandler) wpas_dbus_handler_remove_cred,
+	  {
+		  { "path", "o", ARG_IN },
+		  END_ARGS
+	  }
+	},
+	{ "RemoveAllCreds", WPAS_DBUS_NEW_IFACE_INTERFACE,
+	  (WPADBusMethodHandler) wpas_dbus_handler_remove_all_creds,
+	  {
+		  END_ARGS
+	  }
+	},
+	{ "InterworkingSelect", WPAS_DBUS_NEW_IFACE_INTERFACE,
+	  (WPADBusMethodHandler) wpas_dbus_handler_interworking_select,
+	  {
+		  END_ARGS
+	  }
+	},
+#endif /* CONFIG_INTERWORKING */
 	{ NULL, NULL, NULL, { END_ARGS } }
 };
 
@@ -3820,6 +3944,11 @@ static const struct wpa_dbus_property_desc wpas_dbus_interface_properties[] = {
 	  wpas_dbus_getter_mac_address_randomization_mask,
 	  wpas_dbus_setter_mac_address_randomization_mask,
 	  NULL
+	},
+	{ "MACAddress", WPAS_DBUS_NEW_IFACE_INTERFACE, "ay",
+	  wpas_dbus_getter_mac_address,
+	  NULL,
+	  NULL,
 	},
 	{ NULL, NULL, NULL, NULL, NULL, NULL }
 };
@@ -4137,6 +4266,21 @@ static const struct wpa_dbus_signal_desc wpas_dbus_interface_signals[] = {
 	  }
 	},
 #endif /* CONFIG_MESH */
+#ifdef CONFIG_INTERWORKING
+	{ "InterworkingAPAdded", WPAS_DBUS_NEW_IFACE_INTERFACE,
+	  {
+		  { "bss", "o", ARG_OUT },
+		  { "cred", "o", ARG_OUT },
+		  { "properties", "a{sv}", ARG_OUT },
+		  END_ARGS
+	  }
+	},
+	{ "InterworkingSelectDone", WPAS_DBUS_NEW_IFACE_INTERFACE,
+	  {
+		  END_ARGS
+	  }
+	},
+#endif /* CONFIG_INTERWORKING */
 	{ NULL, NULL, { END_ARGS } }
 };
 
@@ -4385,6 +4529,11 @@ static const struct wpa_dbus_property_desc wpas_dbus_p2p_peer_properties[] = {
 	},
 	{ "VSIE", WPAS_DBUS_NEW_IFACE_P2P_PEER, "ay",
 	  wpas_dbus_getter_p2p_peer_vsie,
+	  NULL,
+	  NULL
+	},
+	{ "SignalChange", WPAS_DBUS_NEW_IFACE_INTERFACE, "a{sv}",
+	  wpas_dbus_getter_signal_change,
 	  NULL,
 	  NULL
 	},

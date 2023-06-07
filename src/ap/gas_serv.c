@@ -1552,7 +1552,7 @@ static void gas_serv_req_local_processing(struct hostapd_data *hapd,
 #ifdef CONFIG_DPP
 void gas_serv_req_dpp_processing(struct hostapd_data *hapd,
 				 const u8 *sa, u8 dialog_token,
-				 int prot, struct wpabuf *buf)
+				 int prot, struct wpabuf *buf, int freq)
 {
 	struct wpabuf *tx_buf;
 
@@ -1610,7 +1610,7 @@ void gas_serv_req_dpp_processing(struct hostapd_data *hapd,
 		return;
 	if (prot)
 		convert_to_protected_dual(tx_buf);
-	hostapd_drv_send_action(hapd, hapd->iface->freq, 0, sa,
+	hostapd_drv_send_action(hapd, freq ? freq : hapd->iface->freq, 0, sa,
 				wpabuf_head(tx_buf),
 				wpabuf_len(tx_buf));
 	wpabuf_free(tx_buf);
@@ -1621,7 +1621,7 @@ void gas_serv_req_dpp_processing(struct hostapd_data *hapd,
 static void gas_serv_rx_gas_initial_req(struct hostapd_data *hapd,
 					const u8 *sa,
 					const u8 *data, size_t len, int prot,
-					int std_addr3)
+					int std_addr3, int freq)
 {
 	const u8 *pos = data;
 	const u8 *end = data + len;
@@ -1716,7 +1716,8 @@ static void gas_serv_rx_gas_initial_req(struct hostapd_data *hapd,
 						  data, len);
 		if (!msg)
 			return;
-		gas_serv_req_dpp_processing(hapd, sa, dialog_token, prot, msg);
+		gas_serv_req_dpp_processing(hapd, sa, dialog_token, prot, msg,
+					    freq);
 		return;
 	}
 #endif /* CONFIG_DPP */
@@ -1899,7 +1900,7 @@ static void gas_serv_rx_public_action(void *ctx, const u8 *buf, size_t len,
 	switch (data[0]) {
 	case WLAN_PA_GAS_INITIAL_REQ:
 		gas_serv_rx_gas_initial_req(hapd, sa, data + 1, len - 1, prot,
-					    std_addr3);
+					    std_addr3, freq);
 		break;
 	case WLAN_PA_GAS_COMEBACK_REQ:
 		gas_serv_rx_gas_comeback_req(hapd, sa, data + 1, len - 1, prot,

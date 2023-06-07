@@ -25,6 +25,7 @@ CFLAGS += -DCONFIG_SAE
 CFLAGS += -DCONFIG_OWE
 CFLAGS += -DCONFIG_DPP
 CFLAGS += -DCONFIG_SHA384
+CFLAGS += -DCONFIG_SHA512
 CFLAGS += -DCONFIG_PASN
 
 OBJS += ../src/common/ieee802_11_common.o
@@ -64,6 +65,7 @@ TOBJS += gcmp.o
 
 
 OBJS_cli = wlantest_cli.o
+OBJS_cli += ../src/common/cli.o
 
 _OBJS_VAR := OBJS
 include ../src/objs.mk

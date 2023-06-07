@@ -17,8 +17,10 @@
 #include "dbus/dbus_common.h"
 #include "dbus/dbus_new.h"
 #include "rsn_supp/wpa.h"
+#include "rsn_supp/pmksa_cache.h"
 #include "fst/fst.h"
 #include "crypto/tls.h"
+#include "bss.h"
 #include "driver_i.h"
 #include "scan.h"
 #include "p2p_supplicant.h"
@@ -211,6 +213,15 @@ void wpas_notify_bssid_changed(struct wpa_supplicant *wpa_s)
 }
 
 
+void wpas_notify_mac_address_changed(struct wpa_supplicant *wpa_s)
+{
+	if (wpa_s->p2p_mgmt)
+		return;
+
+	wpas_dbus_signal_prop_changed(wpa_s, WPAS_DBUS_PROP_MAC_ADDRESS);
+}
+
+
 void wpas_notify_auth_changed(struct wpa_supplicant *wpa_s)
 {
 	if (wpa_s->p2p_mgmt)
@@ -350,8 +361,11 @@ void wpas_notify_network_added(struct wpa_supplicant *wpa_s,
 	 * applications since these network objects won't behave like
 	 * regular ones.
 	 */
-	if (!ssid->p2p_group && wpa_s->global->p2p_group_formation != wpa_s)
+	if (!ssid->p2p_group && wpa_s->global->p2p_group_formation != wpa_s) {
 		wpas_dbus_register_network(wpa_s, ssid);
+		wpa_msg_ctrl(wpa_s, MSG_INFO, WPA_EVENT_NETWORK_ADDED "%d",
+			     ssid->id);
+	}
 }
 
 
@@ -378,20 +392,26 @@ void wpas_notify_network_removed(struct wpa_supplicant *wpa_s,
 {
 	if (wpa_s->next_ssid == ssid)
 		wpa_s->next_ssid = NULL;
+	if (wpa_s->last_ssid == ssid)
+		wpa_s->last_ssid = NULL;
+	if (wpa_s->current_ssid == ssid)
+		wpa_s->current_ssid = NULL;
+#if defined(CONFIG_SME) && defined(CONFIG_SAE)
+	if (wpa_s->sme.ext_auth_wpa_ssid == ssid)
+		wpa_s->sme.ext_auth_wpa_ssid = NULL;
+#endif /* CONFIG_SME && CONFIG_SAE */
 	if (wpa_s->wpa)
 		wpa_sm_pmksa_cache_flush(wpa_s->wpa, ssid);
 	if (!ssid->p2p_group && wpa_s->global->p2p_group_formation != wpa_s &&
-	    !wpa_s->p2p_mgmt)
+	    !wpa_s->p2p_mgmt) {
 		wpas_dbus_unregister_network(wpa_s, ssid->id);
+		wpa_msg_ctrl(wpa_s, MSG_INFO, WPA_EVENT_NETWORK_REMOVED "%d",
+			     ssid->id);
+	}
 	if (network_is_persistent_group(ssid))
 		wpas_notify_persistent_group_removed(wpa_s, ssid);
 
 	wpas_p2p_network_removed(wpa_s, ssid);
-
-#ifdef CONFIG_PASN
-	if (wpa_s->pasn.ssid == ssid)
-		wpa_s->pasn.ssid = NULL;
-#endif /* CONFIG_PASN */
 }
 
 
@@ -937,3 +957,45 @@ void wpas_notify_mesh_peer_disconnected(struct wpa_supplicant *wpa_s,
 }
 
 #endif /* CONFIG_MESH */
+
+
+#ifdef CONFIG_INTERWORKING
+
+void wpas_notify_interworking_ap_added(struct wpa_supplicant *wpa_s,
+				       struct wpa_bss *bss,
+				       struct wpa_cred *cred, int excluded,
+				       const char *type, int bh, int bss_load,
+				       int conn_capab)
+{
+	wpa_msg(wpa_s, MSG_INFO, "%s" MACSTR " type=%s%s%s%s id=%d priority=%d sp_priority=%d",
+		excluded ? INTERWORKING_EXCLUDED : INTERWORKING_AP,
+		MAC2STR(bss->bssid), type,
+		bh ? " below_min_backhaul=1" : "",
+		bss_load ? " over_max_bss_load=1" : "",
+		conn_capab ? " conn_capab_missing=1" : "",
+		cred->id, cred->priority, cred->sp_priority);
+
+	wpas_dbus_signal_interworking_ap_added(wpa_s, bss, cred, type, excluded,
+					       bh, bss_load, conn_capab);
+}
+
+
+void wpas_notify_interworking_select_done(struct wpa_supplicant *wpa_s)
+{
+	wpas_dbus_signal_interworking_select_done(wpa_s);
+}
+
+#endif /* CONFIG_INTERWORKING */
+
+
+void wpas_notify_pmk_cache_added(struct wpa_supplicant *wpa_s,
+				 struct rsn_pmksa_cache_entry *entry)
+{
+	/* TODO: Notify external entities of the added PMKSA cache entry */
+}
+
+
+void wpas_notify_signal_change(struct wpa_supplicant *wpa_s)
+{
+	wpas_dbus_signal_prop_changed(wpa_s, WPAS_DBUS_PROP_SIGNAL_CHANGE);
+}

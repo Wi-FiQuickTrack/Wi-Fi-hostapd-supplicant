@@ -38,6 +38,7 @@ def test_fils_sk_full_auth(dev, apdev, params):
     params['wpa_group_rekey'] = '1'
     hapd = hostapd.add_ap(apdev[0]['ifname'], params)
 
+    dev[0].flush_scan_cache()
     dev[0].scan_for_bss(bssid, freq=2412)
     bss = dev[0].get_bss(bssid)
     logger.debug("BSS: " + str(bss))
@@ -60,7 +61,7 @@ def test_fils_sk_full_auth(dev, apdev, params):
                    erp="1", scan_freq="2412")
     hwsim_utils.test_connectivity(dev[0], hapd)
 
-    ev = dev[0].wait_event(["WPA: Group rekeying completed"], timeout=2)
+    ev = dev[0].wait_event(["RSN: Group rekeying completed"], timeout=2)
     if ev is None:
         raise Exception("GTK rekey timed out")
     hwsim_utils.test_connectivity(dev[0], hapd)
@@ -86,6 +87,7 @@ def test_fils_sk_sha384_full_auth(dev, apdev, params):
     params['wpa_group_rekey'] = '1'
     hapd = hostapd.add_ap(apdev[0]['ifname'], params)
 
+    dev[0].flush_scan_cache()
     dev[0].scan_for_bss(bssid, freq=2412)
     bss = dev[0].get_bss(bssid)
     logger.debug("BSS: " + str(bss))
@@ -108,7 +110,7 @@ def test_fils_sk_sha384_full_auth(dev, apdev, params):
                    erp="1", scan_freq="2412")
     hwsim_utils.test_connectivity(dev[0], hapd)
 
-    ev = dev[0].wait_event(["WPA: Group rekeying completed"], timeout=2)
+    ev = dev[0].wait_event(["RSN: Group rekeying completed"], timeout=2)
     if ev is None:
         raise Exception("GTK rekey timed out")
     hwsim_utils.test_connectivity(dev[0], hapd)
@@ -567,6 +569,7 @@ def test_fils_sk_multiple_realms(dev, apdev, params):
     params['hessid'] = bssid
     hapd = hostapd.add_ap(apdev[0]['ifname'], params)
 
+    dev[0].flush_scan_cache()
     dev[0].scan_for_bss(bssid, freq=2412)
 
     if "OK" not in dev[0].request("ANQP_GET " + bssid + " 275"):
@@ -1419,12 +1422,13 @@ def run_fils_sk_pfs(dev, apdev, group, params):
     check_erp_capa(dev[0])
 
     tls = dev[0].request("GET tls_library")
-    if int(group) in [25]:
-        if not (tls.startswith("OpenSSL") and ("build=OpenSSL 1.0.2" in tls or "build=OpenSSL 1.1" in tls) and ("run=OpenSSL 1.0.2" in tls or "run=OpenSSL 1.1" in tls)):
-            raise HwsimSkip("EC group not supported")
-    if int(group) in [27, 28, 29, 30]:
-        if not (tls.startswith("OpenSSL") and ("build=OpenSSL 1.0.2" in tls or "build=OpenSSL 1.1" in tls) and ("run=OpenSSL 1.0.2" in tls or "run=OpenSSL 1.1" in tls)):
-            raise HwsimSkip("Brainpool EC group not supported")
+    if not tls.startswith("wolfSSL"):
+        if int(group) in [25]:
+            if not (tls.startswith("OpenSSL") and ("build=OpenSSL 1.0.2" in tls or "build=OpenSSL 1.1" in tls or "build=OpenSSL 3.0" in tls) and ("run=OpenSSL 1.0.2" in tls or "run=OpenSSL 1.1" in tls or "run=OpenSSL 3.0" in tls)):
+                raise HwsimSkip("EC group not supported")
+        if int(group) in [27, 28, 29, 30]:
+            if not (tls.startswith("OpenSSL") and ("build=OpenSSL 1.0.2" in tls or "build=OpenSSL 1.1" in tls or "build=OpenSSL 3.0" in tls) and ("run=OpenSSL 1.0.2" in tls or "run=OpenSSL 1.1" in tls or "run=OpenSSL 3.0" in tls)):
+                raise HwsimSkip("Brainpool EC group not supported")
 
     start_erp_as(msk_dump=os.path.join(params['logdir'], "msk.lst"))
 
@@ -1693,7 +1697,7 @@ def setup_fils_rekey(dev, apdev, params, wpa_ptk_rekey=0, wpa_group_rekey=0,
 def test_fils_auth_gtk_rekey(dev, apdev, params):
     """GTK rekeying after FILS authentication"""
     hapd = setup_fils_rekey(dev, apdev, params, wpa_group_rekey=1)
-    ev = dev[0].wait_event(["WPA: Group rekeying completed"], timeout=2)
+    ev = dev[0].wait_event(["RSN: Group rekeying completed"], timeout=2)
     if ev is None:
         raise Exception("GTK rekey timed out")
     hwsim_utils.test_connectivity(dev[0], hapd)
@@ -2358,3 +2362,103 @@ def test_fils_discovery_frame(dev, apdev, params):
                    eap="PSK", identity="psk.user@example.com",
                    password_hex="0123456789abcdef0123456789abcdef",
                    erp="1", scan_freq="2412")
+
+def test_fils_offload_to_driver(dev, apdev, params):
+    """FILS offload to driver"""
+    check_fils_capa(dev[0])
+    check_erp_capa(dev[0])
+    run_fils_offload_to_driver(dev[0], apdev, params)
+
+def test_fils_offload_to_driver2(dev, apdev, params):
+    """FILS offload to driver"""
+    wpas = WpaSupplicant(global_iface='/tmp/wpas-wlan5')
+    wpas.interface_add("wlan5", drv_params="force_connect_cmd=1")
+    run_fils_offload_to_driver(wpas, apdev, params)
+
+def run_fils_offload_to_driver(dev, apdev, params):
+    start_erp_as(msk_dump=os.path.join(params['logdir'], "msk.lst"))
+
+    bssid = apdev[0]['bssid']
+    params = hostapd.wpa2_eap_params(ssid="fils")
+    params['wpa_key_mgmt'] = "FILS-SHA256"
+    params['auth_server_port'] = "18128"
+    params['erp_send_reauth_start'] = '1'
+    params['erp_domain'] = 'example.com'
+    params['fils_realm'] = 'example.com'
+    params['disable_pmksa_caching'] = '1'
+    hapd = hostapd.add_ap(apdev[0]['ifname'], params)
+
+    dev.request("ERP_FLUSH")
+    id = dev.connect("fils", key_mgmt="FILS-SHA256",
+                     eap="PSK", identity="psk.user@example.com",
+                     password_hex="0123456789abcdef0123456789abcdef",
+                     erp="1", scan_freq="2412")
+
+    p = "freq=2412 authorized=1 fils_erp_next_seq_num=4"
+    if "OK" not in dev.request("DRIVER_EVENT ASSOC " + p):
+        raise Exception("DRIVER_EVENT ASSOC did not succeed")
+    dev.wait_connected()
+
+    dev.request("DISCONNECT")
+    dev.wait_disconnected()
+    dev.dump_monitor()
+
+    dev.select_network(id, freq=2412)
+    dev.wait_connected()
+    dev.dump_monitor()
+
+    # This does not really work properly with SME-in-wpa_supplicant case
+    p = "freq=2412 authorized=1 fils_erp_next_seq_num=4"
+    if "OK" not in dev.request("DRIVER_EVENT ASSOC " + p):
+        raise Exception("DRIVER_EVENT ASSOC did not succeed")
+
+    dev.wait_connected()
+
+def test_fils_sk_okc(dev, apdev, params):
+    """FILS SK and opportunistic key caching"""
+    check_fils_capa(dev[0])
+    check_erp_capa(dev[0])
+
+    start_erp_as(msk_dump=os.path.join(params['logdir'], "msk.lst"))
+
+    bssid = apdev[0]['bssid']
+    params = hostapd.wpa2_eap_params(ssid="fils")
+    params['wpa_key_mgmt'] = "FILS-SHA256"
+    params['okc'] = '1'
+    params['auth_server_port'] = "18128"
+    params['erp_domain'] = 'example.com'
+    params['fils_realm'] = 'example.com'
+    hapd = hostapd.add_ap(apdev[0]['ifname'], params)
+
+    dev[0].scan_for_bss(bssid, freq=2412)
+    dev[0].request("ERP_FLUSH")
+    id = dev[0].connect("fils", key_mgmt="FILS-SHA256",
+                        eap="PSK", identity="psk.user@example.com",
+                        password_hex="0123456789abcdef0123456789abcdef",
+                        erp="1", okc=True, scan_freq="2412")
+    pmksa = dev[0].get_pmksa(bssid)
+    if pmksa is None:
+        raise Exception("No PMKSA cache entry created")
+    hapd.wait_sta()
+
+    hapd2 = hostapd.add_ap(apdev[1], params)
+    bssid2 = hapd2.own_addr()
+
+    dev[0].scan_for_bss(bssid2, freq=2412)
+    if "OK" not in dev[0].request("ROAM " + bssid2):
+        raise Exception("ROAM failed")
+    ev = dev[0].wait_event(["CTRL-EVENT-EAP-STARTED",
+                            "CTRL-EVENT-CONNECTED"], timeout=10)
+    if ev is None:
+        raise Exception("Connection using OKC/PMKSA caching timed out")
+    if "CTRL-EVENT-EAP-STARTED" in ev:
+        raise Exception("Unexpected EAP exchange")
+    hapd2.wait_sta()
+    hwsim_utils.test_connectivity(dev[0], hapd2)
+    pmksa2 = dev[0].get_pmksa(bssid2)
+    if pmksa2 is None:
+        raise Exception("No PMKSA cache entry found")
+    if 'opportunistic' not in pmksa2 or pmksa2['opportunistic'] != '1':
+        raise Exception("OKC not indicated in PMKSA entry")
+    if pmksa['pmkid'] != pmksa2['pmkid']:
+        raise Exception("Unexpected PMKID change")

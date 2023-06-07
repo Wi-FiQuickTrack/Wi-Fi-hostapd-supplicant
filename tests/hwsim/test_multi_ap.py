@@ -100,6 +100,11 @@ def test_multi_ap_fronthaul_on_ap(dev, apdev):
     if "CTRL-EVENT-DISCONNECTED" not in ev:
         raise Exception("Unexpected connection result")
 
+def remove_apdev(dev, ifname):
+    hglobal = hostapd.HostapdGlobal()
+    hglobal.remove(ifname)
+    dev.cmd_execute(['iw', ifname, 'del'])
+
 def run_multi_ap_wps(dev, apdev, params, params_backhaul=None, add_apdev=False,
                      run_csa=False, allow_csa_fail=False):
     """Helper for running Multi-AP WPS tests
@@ -219,11 +224,13 @@ def run_multi_ap_wps(dev, apdev, params, params_backhaul=None, add_apdev=False,
                 raise Exception("Received disconnection event instead of channel switch event")
 
         if add_apdev:
-            dev[0].cmd_execute(['iw', wpas_apdev['ifname'], 'del'])
+            remove_apdev(dev[0], wpas_apdev['ifname'])
     except:
         if wpas_apdev:
-            dev[0].cmd_execute(['iw', wpas_apdev['ifname'], 'del'])
+            remove_apdev(dev[0], wpas_apdev['ifname'])
         raise
+
+    return hapd
 
 def test_multi_ap_wps_shared(dev, apdev):
     """WPS on shared fronthaul/backhaul AP"""
@@ -233,7 +240,15 @@ def test_multi_ap_wps_shared(dev, apdev):
     params.update({"multi_ap": "3",
                    "multi_ap_backhaul_ssid": '"%s"' % ssid,
                    "multi_ap_backhaul_wpa_passphrase": passphrase})
-    run_multi_ap_wps(dev, apdev, params)
+    hapd = run_multi_ap_wps(dev, apdev, params)
+    # Verify WPS parameter update with Multi-AP
+    if "OK" not in hapd.request("RELOAD"):
+        raise Exception("hostapd RELOAD failed")
+    dev[0].wait_disconnected()
+    dev[0].request("REMOVE_NETWORK all")
+    hapd.request("WPS_PBC")
+    dev[0].request("WPS_PBC multi_ap=1")
+    dev[0].wait_connected(timeout=20)
 
 def test_multi_ap_wps_shared_csa(dev, apdev):
     """WPS on shared fronthaul/backhaul AP, run CSA"""

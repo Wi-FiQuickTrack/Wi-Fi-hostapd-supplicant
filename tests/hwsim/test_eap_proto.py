@@ -983,7 +983,7 @@ def test_eap_proto_sake_server(dev, apdev):
     # Unknown session
     # --> EAP-SAKE: Session ID mismatch
     sess, = struct.unpack('B', binascii.unhexlify(resp[20:22]))
-    sess = binascii.hexlify(struct.pack('B', sess + 1)).decode()
+    sess = binascii.hexlify(struct.pack('B', (sess + 1) % 256)).decode()
     msg = resp[0:4] + "0008" + resp[8:12] + "0008" + "3002" + sess + "00"
     tx_msg(dev[0], hapd, msg)
     # Unknown subtype
@@ -8158,7 +8158,6 @@ def test_eap_proto_pwd_errors(dev, apdev):
              (3, "crypto_bignum_init_set;compute_password_element"),
              (1, "crypto_bignum_to_bin;compute_password_element"),
              (1, "crypto_ec_point_compute_y_sqr;compute_password_element"),
-             (1, "crypto_ec_point_solve_y_coord;compute_password_element"),
              (1, "crypto_bignum_rand;compute_password_element"),
              (1, "crypto_bignum_sub;compute_password_element")]
     for count, func in funcs:

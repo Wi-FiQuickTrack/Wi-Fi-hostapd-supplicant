@@ -18,6 +18,7 @@ from test_dfs import wait_dfs_event
 
 def test_ap_vht80(dev, apdev):
     """VHT with 80 MHz channel width"""
+    clear_scan_cache(apdev[0])
     try:
         hapd = None
         params = {"ssid": "vht",
@@ -82,6 +83,7 @@ def test_ap_vht80(dev, apdev):
 
 def test_ap_vht_wifi_generation(dev, apdev):
     """VHT and wifi_generation"""
+    clear_scan_cache(apdev[0])
     try:
         hapd = None
         params = {"ssid": "vht",
@@ -165,6 +167,7 @@ def test_ap_vht80d(dev, apdev):
 
 def test_ap_vht80_params(dev, apdev):
     """VHT with 80 MHz channel width and number of optional features enabled"""
+    clear_scan_cache(apdev[0])
     try:
         hapd = None
         params = {"ssid": "vht",
@@ -301,6 +304,7 @@ def test_ap_vht_40(devs, apdevs):
     """VHT and 40 MHz channel"""
     dev = devs[0]
     ap = apdevs[0]
+    clear_scan_cache(ap)
     try:
         hapd = None
         params = {"ssid": "test-vht40",
@@ -354,6 +358,7 @@ def test_ap_vht_capab_not_supported(dev, apdev):
 
 def test_ap_vht160(dev, apdev):
     """VHT with 160 MHz channel width (1)"""
+    clear_scan_cache(apdev[0])
     try:
         hapd = None
         params = {"ssid": "vht",
@@ -369,6 +374,7 @@ def test_ap_vht160(dev, apdev):
                   'ieee80211d': '1',
                   'ieee80211h': '1'}
         hapd = hostapd.add_ap(apdev[0], params, wait_enabled=False)
+        bssid = apdev[0]['bssid']
 
         ev = wait_dfs_event(hapd, "DFS-CAC-START", 5)
         if "DFS-CAC-START" not in ev:
@@ -407,6 +413,10 @@ def test_ap_vht160(dev, apdev):
             raise Exception("Unexpected SIGNAL_POLL value(1): " + str(sig))
         if "WIDTH=160 MHz" not in sig:
             raise Exception("Unexpected SIGNAL_POLL value(2): " + str(sig))
+
+        est = dev[0].get_bss(bssid)['est_throughput']
+        if est != "780001":
+            raise Exception("Unexpected BSS est_throughput: " + est)
 
         sta = hapd.get_sta(dev[0].own_addr())
         if 'supp_op_classes' not in sta or len(sta['supp_op_classes']) < 2:
@@ -1072,6 +1082,7 @@ def test_ap_vht_on_24ghz_2(dev, apdev):
 
 def test_prefer_vht40(dev, apdev):
     """Preference on VHT40 over HT40"""
+    clear_scan_cache(apdev[0])
     try:
         hapd = None
         hapd2 = None
@@ -1119,6 +1130,7 @@ def test_prefer_vht40(dev, apdev):
 
 def test_ap_vht80_pwr_constraint(dev, apdev):
     """VHT with 80 MHz channel width and local power constraint"""
+    clear_scan_cache(apdev[0])
     hapd = None
     try:
         params = {"ssid": "vht",
@@ -1151,6 +1163,7 @@ def test_ap_vht80_pwr_constraint(dev, apdev):
 
 def test_ap_vht_use_sta_nsts(dev, apdev):
     """VHT with 80 MHz channel width and use_sta_nsts=1"""
+    clear_scan_cache(apdev[0])
     try:
         hapd = None
         params = {"ssid": "vht",
@@ -1179,6 +1192,7 @@ def test_ap_vht_use_sta_nsts(dev, apdev):
 def test_ap_vht_tkip(dev, apdev):
     """VHT and TKIP"""
     skip_without_tkip(dev[0])
+    clear_scan_cache(apdev[0])
     try:
         hapd = None
         params = {"ssid": "vht",

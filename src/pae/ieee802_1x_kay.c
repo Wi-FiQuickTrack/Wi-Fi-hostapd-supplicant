@@ -221,8 +221,16 @@ ieee802_1x_mka_dump_dist_sak_body(struct ieee802_1x_mka_dist_sak_body *body)
 
 	wpa_printf(MSG_DEBUG, "\tKey Number............: %d",
 		   be_to_host32(body->kn));
-	/* TODO: Other than GCM-AES-128 case: MACsec Cipher Suite */
-	wpa_hexdump(MSG_DEBUG, "\tAES Key Wrap of SAK...:", body->sak, 24);
+	if (body_len == 28) {
+		wpa_hexdump(MSG_DEBUG, "\tAES Key Wrap of SAK...:",
+			    body->sak, 24);
+	} else if (body_len > CS_ID_LEN - sizeof(body->kn)) {
+		wpa_hexdump(MSG_DEBUG, "\tMACsec Cipher Suite...:",
+			    body->sak, CS_ID_LEN);
+		wpa_hexdump(MSG_DEBUG, "\tAES Key Wrap of SAK...:",
+			    body->sak + CS_ID_LEN,
+			    body_len - CS_ID_LEN - sizeof(body->kn));
+	}
 }
 
 
@@ -3057,12 +3065,12 @@ int ieee802_1x_kay_enable_new_info(struct ieee802_1x_kay *kay)
 
 
 /**
- * ieee802_1x_kay_mkpdu_sanity_check -
- * Sanity checks specified in IEEE Std 802.1X-2010, 11.11.2 (Validation of
+ * ieee802_1x_kay_mkpdu_validity_check -
+ * Validity checks specified in IEEE Std 802.1X-2010, 11.11.2 (Validation of
  * MKPDUs)
  */
-static int ieee802_1x_kay_mkpdu_sanity_check(struct ieee802_1x_kay *kay,
-					     const u8 *buf, size_t len)
+static int ieee802_1x_kay_mkpdu_validity_check(struct ieee802_1x_kay *kay,
+					       const u8 *buf, size_t len)
 {
 	struct ieee8023_hdr *eth_hdr;
 	struct ieee802_1x_hdr *eapol_hdr;
@@ -3215,7 +3223,7 @@ static int ieee802_1x_kay_decode_mkpdu(struct ieee802_1x_kay *kay,
 
 	wpa_printf(MSG_DEBUG, "KaY: Decode received MKPDU (ifname=%s)",
 		   kay->if_name);
-	if (ieee802_1x_kay_mkpdu_sanity_check(kay, buf, len))
+	if (ieee802_1x_kay_mkpdu_validity_check(kay, buf, len))
 		return -1;
 
 	/* handle basic parameter set */
@@ -3456,7 +3464,8 @@ static void kay_l2_receive(void *ctx, const u8 *src_addr, const u8 *buf,
 struct ieee802_1x_kay *
 ieee802_1x_kay_init(struct ieee802_1x_kay_ctx *ctx, enum macsec_policy policy,
 		    bool macsec_replay_protect, u32 macsec_replay_window,
-		    u16 port, u8 priority, const char *ifname, const u8 *addr)
+		    u16 port, u8 priority, u32 macsec_csindex,
+		    const char *ifname, const u8 *addr)
 {
 	struct ieee802_1x_kay *kay;
 
@@ -3493,7 +3502,7 @@ ieee802_1x_kay_init(struct ieee802_1x_kay_ctx *ctx, enum macsec_policy policy,
 	kay->dist_time = 0;
 
 	kay->pn_exhaustion = PENDING_PN_EXHAUSTION;
-	kay->macsec_csindex = DEFAULT_CS_INDEX;
+	kay->macsec_csindex = macsec_csindex;
 	kay->mka_algindex = DEFAULT_MKA_ALG_INDEX;
 	kay->mka_version = MKA_VERSION_ID;
 

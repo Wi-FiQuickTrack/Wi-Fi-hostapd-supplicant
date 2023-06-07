@@ -524,6 +524,11 @@ static void wnm_parse_neighbor_report_elem(struct neighbor_report *rep,
 		rep->mul_bssid->subelem_len = elen - 1;
 		os_memcpy(rep->mul_bssid->subelems, pos + 1, elen - 1);
 		break;
+	default:
+		wpa_printf(MSG_DEBUG,
+			   "WNM: Unsupported neighbor report subelement id %u",
+			   id);
+		break;
 	}
 }
 
@@ -921,7 +926,8 @@ static int wnm_nei_rep_add_bss(struct wpa_supplicant *wpa_s,
 {
 	const u8 *ie;
 	u8 op_class, chan;
-	int sec_chan = 0, vht = 0;
+	int sec_chan = 0;
+	enum oper_chan_width vht = CONF_OPER_CHWIDTH_USE_HT;
 	enum phy_type phy_type;
 	u32 info;
 	struct ieee80211_ht_operation *ht_oper = NULL;
@@ -1097,6 +1103,8 @@ static void wnm_bss_tm_connect(struct wpa_supplicant *wpa_s,
 			       struct wpa_bss *bss, struct wpa_ssid *ssid,
 			       int after_new_scan)
 {
+	struct wpa_radio_work *already_connecting;
+
 	wpa_dbg(wpa_s, MSG_DEBUG,
 		"WNM: Transition to BSS " MACSTR
 		" based on BSS Transition Management Request (old BSSID "
@@ -1121,9 +1129,18 @@ static void wnm_bss_tm_connect(struct wpa_supplicant *wpa_s,
 		return;
 	}
 
+	already_connecting = radio_work_pending(wpa_s, "sme-connect");
 	wpa_s->reassociate = 1;
 	wpa_printf(MSG_DEBUG, "WNM: Issuing connect");
 	wpa_supplicant_connect(wpa_s, bss, ssid);
+
+	/*
+	 * Indicate that a BSS transition is in progress so scan results that
+	 * come in before the 'sme-connect' radio work gets executed do not
+	 * override the original connection attempt.
+	 */
+	if (!already_connecting && radio_work_pending(wpa_s, "sme-connect"))
+		wpa_s->bss_trans_mgmt_in_progress = true;
 	wnm_deallocate_memory(wpa_s);
 }
 
@@ -1343,11 +1360,11 @@ static int wnm_fetch_scan_results(struct wpa_supplicant *wpa_s)
 				continue;
 			bss = wpa_s->current_bss;
 			ssid_ie = wpa_scan_get_ie(res, WLAN_EID_SSID);
-			if (bss && ssid_ie &&
+			if (bss && ssid_ie && ssid_ie[1] &&
 			    (bss->ssid_len != ssid_ie[1] ||
 			     os_memcmp(bss->ssid, ssid_ie + 2,
 				       bss->ssid_len) != 0))
-				continue;
+				continue; /* Skip entries for other ESSs */
 
 			/* Potential candidate found */
 			found = 1;
@@ -1442,15 +1459,22 @@ static void ieee802_11_rx_bss_trans_mgmt_req(struct wpa_supplicant *wpa_s,
 
 	if (wpa_s->wnm_mode & WNM_BSS_TM_REQ_ESS_DISASSOC_IMMINENT) {
 		char url[256];
+		u8 url_len;
 
-		if (end - pos < 1 || 1 + pos[0] > end - pos) {
+		if (end - pos < 1) {
 			wpa_printf(MSG_DEBUG, "WNM: Invalid BSS Transition "
 				   "Management Request (URL)");
 			return;
 		}
-		os_memcpy(url, pos + 1, pos[0]);
-		url[pos[0]] = '\0';
-		pos += 1 + pos[0];
+		url_len = *pos++;
+		if (url_len > end - pos) {
+			wpa_printf(MSG_DEBUG,
+				   "WNM: Invalid BSS Transition Management Request (URL truncated)");
+			return;
+		}
+		os_memcpy(url, pos, url_len);
+		url[url_len] = '\0';
+		pos += url_len;
 
 		wpa_msg(wpa_s, MSG_INFO, ESS_DISASSOC_IMMINENT "%d %u %s",
 			wpa_sm_pmf_enabled(wpa_s->wpa),
