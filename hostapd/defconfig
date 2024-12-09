@@ -141,6 +141,9 @@ CONFIG_PKCS12=y
 # Build IPv6 support for RADIUS operations
 CONFIG_IPV6=y
 
+# Include support fo RADIUS/TLS into the RADIUS client
+#CONFIG_RADIUS_TLS=y
+
 # IEEE Std 802.11r-2008 (Fast BSS Transition)
 #CONFIG_IEEE80211R=y
 
@@ -410,7 +413,6 @@ CONFIG_IPV6=y
 # Experimental implementation based on IEEE P802.11z/D2.6 and the protocol
 # design is still subject to change. As such, this should not yet be enabled in
 # production use.
-# This requires CONFIG_IEEE80211W=y to be enabled, too.
 #CONFIG_PASN=y
 
 # Device Provisioning Protocol (DPP) (also known as Wi-Fi Easy Connect)
@@ -420,3 +422,6 @@ CONFIG_DPP2=y
 # DPP version 3 support (experimental and still changing; do not enable for
 # production use)
 #CONFIG_DPP3=y
+
+# Wi-Fi Aware unsynchronized service discovery (NAN USD)
+#CONFIG_NAN_USD=y

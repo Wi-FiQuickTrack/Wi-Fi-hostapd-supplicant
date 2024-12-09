@@ -84,7 +84,7 @@ static int hostapd_acl_cache_get(struct hostapd_data *hapd, const u8 *addr,
 	os_get_reltime(&now);
 
 	for (entry = hapd->acl_cache; entry; entry = entry->next) {
-		if (os_memcmp(entry->addr, addr, ETH_ALEN) != 0)
+		if (!ether_addr_equal(entry->addr, addr))
 			continue;
 
 		if (os_reltime_expired(&now, &entry->timestamp,
@@ -127,6 +127,9 @@ static int hostapd_radius_acl_query(struct hostapd_data *hapd, const u8 *addr,
 		wpa_printf(MSG_INFO, "Could not make Request Authenticator");
 		goto fail;
 	}
+
+	if (!radius_msg_add_msg_auth(msg))
+		goto fail;
 
 	os_snprintf(buf, sizeof(buf), RADIUS_ADDR_FORMAT, MAC2STR(addr));
 	if (!radius_msg_add_attr(msg, RADIUS_ATTR_USER_NAME, (u8 *) buf,
@@ -281,7 +284,7 @@ int hostapd_allowed_address(struct hostapd_data *hapd, const u8 *addr,
 
 		query = hapd->acl_queries;
 		while (query) {
-			if (os_memcmp(query->addr, addr, ETH_ALEN) == 0) {
+			if (ether_addr_equal(query->addr, addr)) {
 				/* pending query in RADIUS retransmit queue;
 				 * do not generate a new one */
 				return HOSTAPD_ACL_PENDING;
@@ -505,7 +508,9 @@ hostapd_acl_recv_radius(struct radius_msg *msg, struct radius_msg *req,
 		   "Found matching Access-Request for RADIUS message (id=%d)",
 		   query->radius_id);
 
-	if (radius_msg_verify(msg, shared_secret, shared_secret_len, req, 0)) {
+	if (radius_msg_verify(
+		    msg, shared_secret, shared_secret_len, req,
+		    hapd->conf->radius_require_message_authenticator)) {
 		wpa_printf(MSG_INFO,
 			   "Incoming RADIUS packet did not have correct authenticator - dropped");
 		return RADIUS_RX_INVALID_AUTHENTICATOR;
@@ -596,7 +601,8 @@ hostapd_acl_recv_radius(struct radius_msg *msg, struct radius_msg *req,
 
 	if (query->radius_psk) {
 		struct sta_info *sta;
-		bool success = cache->accepted == HOSTAPD_ACL_ACCEPT;
+		bool success = cache->accepted == HOSTAPD_ACL_ACCEPT ||
+			cache->accepted == HOSTAPD_ACL_ACCEPT_TIMEOUT;
 
 		sta = ap_get_sta(hapd, query->addr);
 		if (!sta || !sta->wpa_sm) {

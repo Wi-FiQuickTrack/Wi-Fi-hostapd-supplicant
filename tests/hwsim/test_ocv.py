@@ -388,9 +388,9 @@ class APConnection:
         pmk = binascii.unhexlify("c2c6c255af836bed1b3f2f1ded98e052f5ad618bb554e2836757b55854a0eab7")
 
         if sta_ocv != "0":
-            self.rsne = binascii.unhexlify("301a0100000fac040100000fac040100000fac0280400000000fac06")
+            self.rsne = binascii.unhexlify("301a0100000fac040100000fac040100000fac028c400000000fac06")
         else:
-            self.rsne = binascii.unhexlify("301a0100000fac040100000fac040100000fac0280000000000fac06")
+            self.rsne = binascii.unhexlify("301a0100000fac040100000fac040100000fac028c000000000fac06")
         self.snonce = binascii.unhexlify('1111111111111111111111111111111111111111111111111111111111111111')
 
         dev.connect(self.ssid, raw_psk=self.psk, scan_freq=freq, ocv=sta_ocv,
@@ -977,7 +977,7 @@ def test_wpa2_ocv_sta_override_sa_query_resp(dev, apdev):
     dev[0].connect(ssid, psk=passphrase, scan_freq="2412", ocv="1",
                    ieee80211w="2")
     dev[0].set("oci_freq_override_saquery_resp", "2462")
-    hapd.wait_sta()
+    hapd.wait_sta(wait_4way_hs=True)
     if "OK" not in hapd.request("SA_QUERY " + dev[0].own_addr()):
         raise Exception("SA_QUERY failed")
     check_ocv_failure(hapd, "SA Query Response", "saqueryresp",
@@ -1056,6 +1056,7 @@ def test_wpa2_ocv_ap_override_saquery_req(dev, apdev):
     bssid = hapd.own_addr()
     dev[0].connect(ssid, psk=passphrase, scan_freq="2412", ocv="1",
                    ieee80211w="2")
+    hapd.wait_sta(wait_4way_hs=True)
 
     if "OK" not in hapd.request("SA_QUERY " + dev[0].own_addr()):
         raise Exception("SA_QUERY failed")

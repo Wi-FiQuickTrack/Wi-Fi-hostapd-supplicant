@@ -183,8 +183,8 @@ void get_pri_sec_chan(struct wpa_scan_res *bss, int *pri_chan, int *sec_chan)
 
 	*pri_chan = *sec_chan = 0;
 
-	ieee802_11_parse_elems((u8 *) (bss + 1), bss->ie_len, &elems, 0);
-	if (elems.ht_operation) {
+	if (ieee802_11_parse_elems((u8 *) (bss + 1), bss->ie_len, &elems, 0) !=
+	    ParseFailed && elems.ht_operation) {
 		oper = (struct ieee80211_ht_operation *) elems.ht_operation;
 		*pri_chan = oper->primary_chan;
 		if (oper->ht_param & HT_INFO_HT_PARAM_STA_CHNL_WIDTH) {
@@ -227,7 +227,12 @@ int check_40mhz_5g(struct wpa_scan_results *scan_res,
 	if (sec_bss && !pri_bss) {
 		wpa_printf(MSG_INFO,
 			   "Switch own primary and secondary channel to get secondary channel with no Beacons from other BSSes");
+#ifdef CONFIG_WFA
+		wpa_printf(MSG_INFO, "WFA: Force to use primary channel");
+		return 1;
+#else
 		return 2;
+#endif
 	}
 
 	/*
@@ -255,7 +260,12 @@ int check_40mhz_5g(struct wpa_scan_results *scan_res,
 					   "secondary channel due to BSS "
 					   "overlap with " MACSTR,
 					   MAC2STR(bss->bssid));
+#ifdef CONFIG_WFA
+				wpa_printf(MSG_INFO, "WFA: Force to use primary channel");
+				return 1;
+#else
 				return 2;
+#endif
 			}
 		}
 	}
@@ -273,7 +283,10 @@ static int check_20mhz_bss(struct wpa_scan_res *bss, int pri_freq, int start,
 	if (bss->freq < start || bss->freq > end || bss->freq == pri_freq)
 		return 0;
 
-	ieee802_11_parse_elems((u8 *) (bss + 1), bss->ie_len, &elems, 0);
+	if (ieee802_11_parse_elems((u8 *) (bss + 1), bss->ie_len, &elems, 0) ==
+	    ParseFailed)
+		return 0;
+
 	if (!elems.ht_capabilities) {
 		wpa_printf(MSG_DEBUG, "Found overlapping legacy BSS: "
 			   MACSTR " freq=%d", MAC2STR(bss->bssid), bss->freq);
@@ -357,9 +370,9 @@ int check_40mhz_2g4(struct hostapd_hw_modes *mode,
 			}
 		}
 
-		ieee802_11_parse_elems((u8 *) (bss + 1), bss->ie_len, &elems,
-				       0);
-		if (elems.ht_capabilities) {
+		if (ieee802_11_parse_elems((u8 *) (bss + 1), bss->ie_len,
+					   &elems, 0) != ParseFailed &&
+		    elems.ht_capabilities) {
 			struct ieee80211_ht_capabilities *ht_cap =
 				(struct ieee80211_ht_capabilities *)
 				elems.ht_capabilities;
@@ -378,6 +391,75 @@ int check_40mhz_2g4(struct hostapd_hw_modes *mode,
 }
 
 
+static void punct_update_legacy_bw_80(u8 bitmap, u8 pri_chan, u8 *seg0)
+{
+	u8 first_chan = *seg0 - 6, sec_chan;
+
+	switch (bitmap) {
+	case 0x6:
+		*seg0 = 0;
+		return;
+	case 0x8:
+	case 0x4:
+	case 0x2:
+	case 0x1:
+	case 0xC:
+	case 0x3:
+		if (pri_chan < *seg0)
+			*seg0 -= 4;
+		else
+			*seg0 += 4;
+		break;
+	}
+
+	if (pri_chan < *seg0)
+		sec_chan = pri_chan + 4;
+	else
+		sec_chan = pri_chan - 4;
+
+	if (bitmap & BIT((sec_chan - first_chan) / 4))
+		*seg0 = 0;
+}
+
+
+static void punct_update_legacy_bw_160(u8 bitmap, u8 pri,
+				       enum oper_chan_width *width, u8 *seg0)
+{
+	if (pri < *seg0) {
+		*seg0 -= 8;
+		if (bitmap & 0x0F) {
+			*width = 0;
+			punct_update_legacy_bw_80(bitmap & 0xF, pri, seg0);
+		}
+	} else {
+		*seg0 += 8;
+		if (bitmap & 0xF0) {
+			*width = 0;
+			punct_update_legacy_bw_80((bitmap & 0xF0) >> 4, pri,
+						  seg0);
+		}
+	}
+}
+
+
+void punct_update_legacy_bw(u16 bitmap, u8 pri, enum oper_chan_width *width,
+			    u8 *seg0, u8 *seg1)
+{
+	if (*width == CONF_OPER_CHWIDTH_80MHZ && (bitmap & 0xF)) {
+		*width = CONF_OPER_CHWIDTH_USE_HT;
+		punct_update_legacy_bw_80(bitmap & 0xF, pri, seg0);
+	}
+
+	if (*width == CONF_OPER_CHWIDTH_160MHZ && (bitmap & 0xFF)) {
+		*width = CONF_OPER_CHWIDTH_80MHZ;
+		*seg1 = 0;
+		punct_update_legacy_bw_160(bitmap & 0xFF, pri, width, seg0);
+	}
+
+	/* TODO: 320 MHz */
+}
+
+
 int hostapd_set_freq_params(struct hostapd_freq_params *data,
 			    enum hostapd_hw_mode mode,
 			    int freq, int channel, int enable_edmg,
@@ -388,8 +470,12 @@ int hostapd_set_freq_params(struct hostapd_freq_params *data,
 			    int center_segment0,
 			    int center_segment1, u32 vht_caps,
 			    struct he_capabilities *he_cap,
-			    struct eht_capabilities *eht_cap)
+			    struct eht_capabilities *eht_cap,
+			    u16 punct_bitmap)
 {
+	enum oper_chan_width oper_chwidth_legacy;
+	u8 seg0_legacy, seg1_legacy;
+
 	if (!he_cap || !he_cap->he_supported)
 		he_enabled = 0;
 	if (!eht_cap || !eht_cap->eht_supported)
@@ -445,6 +531,7 @@ int hostapd_set_freq_params(struct hostapd_freq_params *data,
 		} else {
 			int freq1, freq2 = 0;
 			int bw = center_idx_to_bw_6ghz(center_segment0);
+			int opclass;
 
 			if (bw < 0) {
 				wpa_printf(MSG_ERROR,
@@ -452,7 +539,10 @@ int hostapd_set_freq_params(struct hostapd_freq_params *data,
 				return -1;
 			}
 
-			freq1 = ieee80211_chan_to_freq(NULL, 131,
+			/* The 6 GHz channel 2 uses a different operating class
+			 */
+			opclass = center_segment0 == 2 ? 136 : 131;
+			freq1 = ieee80211_chan_to_freq(NULL, opclass,
 						       center_segment0);
 			if (freq1 < 0) {
 				wpa_printf(MSG_ERROR,
@@ -574,6 +664,14 @@ int hostapd_set_freq_params(struct hostapd_freq_params *data,
 	}
 #endif /* CONFIG_WFA */
 
+	oper_chwidth_legacy = oper_chwidth;
+	seg0_legacy = center_segment0;
+	seg1_legacy = center_segment1;
+	if (punct_bitmap)
+		punct_update_legacy_bw(punct_bitmap, channel,
+				       &oper_chwidth_legacy,
+				       &seg0_legacy, &seg1_legacy);
+
 	if (data->eht_enabled || data->he_enabled ||
 	    data->vht_enabled) switch (oper_chwidth) {
 	case CONF_OPER_CHWIDTH_USE_HT:
@@ -598,7 +696,8 @@ int hostapd_set_freq_params(struct hostapd_freq_params *data,
 		/* fall through */
 	case CONF_OPER_CHWIDTH_80MHZ:
 		data->bandwidth = 80;
-		if (!sec_channel_offset) {
+		if (!sec_channel_offset &&
+		    oper_chwidth_legacy != CONF_OPER_CHWIDTH_USE_HT) {
 			wpa_printf(MSG_ERROR,
 				   "80/80+80 MHz: no second channel offset");
 			return -1;
@@ -656,7 +755,8 @@ int hostapd_set_freq_params(struct hostapd_freq_params *data,
 				   "160 MHz: center segment 1 should not be set");
 			return -1;
 		}
-		if (!sec_channel_offset) {
+		if (!sec_channel_offset &&
+		    oper_chwidth_legacy != CONF_OPER_CHWIDTH_USE_HT) {
 			wpa_printf(MSG_ERROR,
 				   "160 MHz: second channel offset not set");
 			return -1;
@@ -878,4 +978,71 @@ int chan_pri_allowed(const struct hostapd_channel_data *chan)
 {
 	return !(chan->flag & HOSTAPD_CHAN_DISABLED) &&
 		(chan->allowed_bw & HOSTAPD_CHAN_WIDTH_20);
+}
+
+
+/* IEEE P802.11be/D3.0, Table 36-30 - Definition of the Punctured Channel
+ * Information field in the U-SIG for an EHT MU PPDU using non-OFDMA
+ * transmissions */
+static const u16 punct_bitmap_80[] = { 0xF, 0xE, 0xD, 0xB, 0x7 };
+static const u16 punct_bitmap_160[] = {
+	0xFF, 0xFE, 0xFD, 0xFB, 0xF7, 0xEF, 0xDF, 0xBF,
+	0x7F, 0xFC, 0xF3, 0xCF, 0x3F
+};
+static const u16 punct_bitmap_320[] = {
+	0xFFFF, 0xFFFC, 0xFFF3, 0xFFCF, 0xFF3F, 0xFCFF, 0xF3FF, 0xCFFF,
+	0x3FFF, 0xFFF0, 0xFF0F, 0xF0FF, 0x0FFF, 0xFFC0, 0xFF30, 0xFCF0,
+	0xF3F0, 0xCFF0, 0x3FF0, 0x0FFC, 0x0FF3, 0x0FCF, 0x0F3F, 0x0CFF,
+	0x03FF
+};
+
+
+bool is_punct_bitmap_valid(u16 bw, u16 pri_ch_bit_pos, u16 punct_bitmap)
+{
+	u8 i, count;
+	u16 bitmap;
+	const u16 *valid_bitmaps;
+
+	if (!punct_bitmap) /* All channels active */
+		return true;
+
+	bitmap = ~punct_bitmap;
+
+	switch (bw) {
+	case 80:
+		bitmap &= 0xF;
+		valid_bitmaps = punct_bitmap_80;
+		count = ARRAY_SIZE(punct_bitmap_80);
+		break;
+
+	case 160:
+		bitmap &= 0xFF;
+		valid_bitmaps = punct_bitmap_160;
+		count = ARRAY_SIZE(punct_bitmap_160);
+		break;
+
+	case 320:
+		bitmap &= 0xFFFF;
+		valid_bitmaps = punct_bitmap_320;
+		count = ARRAY_SIZE(punct_bitmap_320);
+		break;
+
+	default:
+		return false;
+	}
+
+	if (!bitmap) /* No channel active */
+		return false;
+
+	if (!(bitmap & BIT(pri_ch_bit_pos))) {
+		wpa_printf(MSG_DEBUG, "Primary channel cannot be punctured");
+		return false;
+	}
+
+	for (i = 0; i < count; i++) {
+		if (valid_bitmaps[i] == bitmap)
+			return true;
+	}
+
+	return false;
 }

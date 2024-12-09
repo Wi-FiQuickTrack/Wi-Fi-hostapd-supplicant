@@ -284,6 +284,7 @@ void * tls_init(const struct tls_config *conf)
 		ciphers = conf->openssl_ciphers;
 	else
 		ciphers = "ALL";
+	wpa_printf(MSG_DEBUG, "wolfSSL: cipher suites: %s", ciphers);
 	if (wolfSSL_CTX_set_cipher_list(ssl_ctx, ciphers) != 1) {
 		wpa_printf(MSG_ERROR,
 			   "wolfSSL: Failed to set cipher string '%s'",
@@ -1323,6 +1324,8 @@ int tls_connection_set_params(void *tls_ctx, struct tls_connection *conn,
 		return -1;
 	}
 
+	wpa_printf(MSG_DEBUG, "wolfSSL: cipher suites: %s",
+		   params->openssl_ciphers ? params->openssl_ciphers : "N/A");
 	if (params->openssl_ciphers &&
 	    wolfSSL_set_cipher_list(conn->ssl, params->openssl_ciphers) != 1) {
 		wpa_printf(MSG_INFO,
@@ -1553,6 +1556,8 @@ int tls_global_set_params(void *tls_ctx,
 		return -1;
 	}
 
+	wpa_printf(MSG_DEBUG, "wolfSSL: cipher suites: %s",
+		   params->openssl_ciphers ? params->openssl_ciphers : "N/A");
 	if (params->openssl_ciphers &&
 	    wolfSSL_CTX_set_cipher_list(tls_ctx,
 					params->openssl_ciphers) != 1) {
@@ -1665,20 +1670,31 @@ static struct wpabuf * wolfssl_handshake(struct tls_connection *conn,
 		wpa_printf(MSG_DEBUG, "SSL: wolfSSL_connect: %d", res);
 	}
 
-	if (res != 1) {
+	if (res != WOLFSSL_SUCCESS) {
 		int err = wolfSSL_get_error(conn->ssl, res);
 
-		if (err == SSL_ERROR_WANT_READ) {
+		if (err == WOLFSSL_ERROR_NONE) {
 			wpa_printf(MSG_DEBUG,
-				   "SSL: wolfSSL_connect - want more data");
-		} else if (err == SSL_ERROR_WANT_WRITE) {
+				   "SSL: %s - WOLFSSL_ERROR_NONE (%d)",
+				   server ? "wolfSSL_accept" :
+				   "wolfSSL_connect", res);
+		} else if (err == WOLFSSL_ERROR_WANT_READ) {
 			wpa_printf(MSG_DEBUG,
-				   "SSL: wolfSSL_connect - want to write");
+				   "SSL: %s - want more data",
+				   server ? "wolfSSL_accept" :
+				   "wolfSSL_connect");
+		} else if (err == WOLFSSL_ERROR_WANT_WRITE) {
+			wpa_printf(MSG_DEBUG,
+				   "SSL: %s - want to write",
+				   server ? "wolfSSL_accept" :
+				   "wolfSSL_connect");
 		} else {
 			char msg[80];
 
 			wpa_printf(MSG_DEBUG,
-				   "SSL: wolfSSL_connect - failed %s",
+				   "SSL: %s - failed %s",
+				   server ? "wolfSSL_accept" :
+				   "wolfSSL_connect",
 				   wolfSSL_ERR_error_string(err, msg));
 			conn->failed++;
 		}

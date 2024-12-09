@@ -24,7 +24,7 @@ hostapd_neighbor_get(struct hostapd_data *hapd, const u8 *bssid,
 
 	dl_list_for_each(nr, &hapd->nr_db, struct hostapd_neighbor_entry,
 			 list) {
-		if (os_memcmp(bssid, nr->bssid, ETH_ALEN) == 0 &&
+		if (ether_addr_equal(bssid, nr->bssid) &&
 		    (!ssid ||
 		     (ssid->ssid_len == nr->ssid.ssid_len &&
 		      os_memcmp(ssid->ssid, nr->ssid.ssid,
@@ -99,7 +99,10 @@ static void hostapd_neighbor_clear_entry(struct hostapd_neighbor_entry *nr)
 	nr->civic = NULL;
 	os_memset(nr->bssid, 0, sizeof(nr->bssid));
 	os_memset(&nr->ssid, 0, sizeof(nr->ssid));
+	os_memset(&nr->lci_date, 0, sizeof(nr->lci_date));
 	nr->stationary = 0;
+	nr->short_ssid = 0;
+	nr->bss_parameters = 0;
 }
 
 
@@ -165,6 +168,14 @@ fail:
 }
 
 
+static void hostapd_neighbor_free(struct hostapd_neighbor_entry *nr)
+{
+	hostapd_neighbor_clear_entry(nr);
+	dl_list_del(&nr->list);
+	os_free(nr);
+}
+
+
 int hostapd_neighbor_remove(struct hostapd_data *hapd, const u8 *bssid,
 			    const struct wpa_ssid_value *ssid)
 {
@@ -174,9 +185,7 @@ int hostapd_neighbor_remove(struct hostapd_data *hapd, const u8 *bssid,
 	if (!nr)
 		return -1;
 
-	hostapd_neighbor_clear_entry(nr);
-	dl_list_del(&nr->list);
-	os_free(nr);
+	hostapd_neighbor_free(nr);
 
 	return 0;
 }
@@ -188,9 +197,7 @@ void hostapd_free_neighbor_db(struct hostapd_data *hapd)
 
 	dl_list_for_each_safe(nr, prev, &hapd->nr_db,
 			      struct hostapd_neighbor_entry, list) {
-		hostapd_neighbor_clear_entry(nr);
-		dl_list_del(&nr->list);
-		os_free(nr);
+		hostapd_neighbor_free(nr);
 	}
 }
 
@@ -353,3 +360,34 @@ struct wpabuf * hostapd_neighbor_get_own_report_with_pref(
 	return nr;
 }
 #endif /* CONFIG_WFA */
+
+static struct hostapd_neighbor_entry *
+hostapd_neighbor_get_diff_short_ssid(struct hostapd_data *hapd, const u8 *bssid)
+{
+	struct hostapd_neighbor_entry *nr;
+
+	dl_list_for_each(nr, &hapd->nr_db, struct hostapd_neighbor_entry,
+			 list) {
+		if (ether_addr_equal(bssid, nr->bssid) &&
+		    nr->short_ssid != hapd->conf->ssid.short_ssid)
+			return nr;
+	}
+	return NULL;
+}
+
+
+int hostapd_neighbor_sync_own_report(struct hostapd_data *hapd)
+{
+	struct hostapd_neighbor_entry *nr;
+
+	nr = hostapd_neighbor_get_diff_short_ssid(hapd, hapd->own_addr);
+	if (!nr)
+		return -1;
+
+	/* Clear old entry due to SSID change */
+	hostapd_neighbor_free(nr);
+
+	hostapd_neighbor_set_own_report(hapd);
+
+	return 0;
+}

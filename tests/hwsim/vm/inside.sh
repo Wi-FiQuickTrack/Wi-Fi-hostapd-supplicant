@@ -93,6 +93,11 @@ tcp     6       TCP
 udp     17      UDP
 ipv6-icmp 58	IPv6-ICMP
 EOF
+# for pyrad
+cat > /etc/services <<EOF
+http            80/tcp          www www-http
+http            80/udp          www www-http
+EOF
 
 # we may need /etc/alternatives, at least on Debian-based systems
 ln -s /tmp/etc/alternatives /etc/
@@ -140,6 +145,9 @@ if [ "$TELNET" = "1" ] ; then
     done
   ) &
 fi
+
+# procps 3.3.17 needs an uptime of >1s (relevant for UML time-travel)
+sleep 1
 
 # check if we're rebooting due to a kernel panic ...
 if grep -q 'Kernel panic' /tmp/logs/console ; then

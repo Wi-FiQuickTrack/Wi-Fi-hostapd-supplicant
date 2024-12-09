@@ -314,7 +314,19 @@ int wpa_supplicant_conf_ap_ht(struct wpa_supplicant *wpa_s,
 #ifdef CONFIG_HT_OVERRIDES
 		if (ssid->disable_ht)
 			ssid->ht = 0;
+		if (ssid->disable_ht40)
+			ssid->ht40 = 0;
 #endif /* CONFIG_HT_OVERRIDES */
+
+#ifdef CONFIG_VHT_OVERRIDES
+		if (ssid->disable_vht)
+			ssid->vht = 0;
+#endif /* CONFIG_VHT_OVERRIDES */
+
+#ifdef CONFIG_HE_OVERRIDES
+		if (ssid->disable_he)
+			ssid->he = 0;
+#endif /* CONFIG_HE_OVERRIDES */
 
 		if (!ssid->ht) {
 			wpa_printf(MSG_DEBUG,
@@ -326,6 +338,16 @@ int wpa_supplicant_conf_ap_ht(struct wpa_supplicant *wpa_s,
 
 		if (mode && is_6ghz_freq(ssid->frequency) &&
 		    conf->hw_mode == HOSTAPD_MODE_IEEE80211A) {
+			if (mode->eht_capab[wpas_mode_to_ieee80211_mode(
+					    ssid->mode)].eht_supported &&
+			    ssid->eht)
+				conf->ieee80211be = 1;
+
+			if (mode->he_capab[wpas_mode_to_ieee80211_mode(
+					    ssid->mode)].he_supported &&
+			    ssid->he)
+				conf->ieee80211ax = 1;
+
 #ifdef CONFIG_P2P
 			wpas_conf_ap_he_6ghz(wpa_s, mode, ssid, conf);
 #endif /* CONFIG_P2P */
@@ -400,6 +422,11 @@ int wpa_supplicant_conf_ap_ht(struct wpa_supplicant *wpa_s,
 			/* check this before VHT, because setting oper chan
 			 * width and friends is the same call for HE and VHT
 			 * and checks if conf->ieee8021ax == 1 */
+			if (mode->eht_capab[wpas_mode_to_ieee80211_mode(
+					    ssid->mode)].eht_supported &&
+			    ssid->eht)
+				conf->ieee80211be = 1;
+
 			if (mode->he_capab[wpas_mode_to_ieee80211_mode(
 					    ssid->mode)].he_supported &&
 			    ssid->he)
@@ -412,6 +439,13 @@ int wpa_supplicant_conf_ap_ht(struct wpa_supplicant *wpa_s,
 			}
 		}
 	}
+
+#ifdef CONFIG_P2P
+	if (ssid->p2p_group && wpa_s->p2p_go_no_pri_sec_switch) {
+		conf->no_pri_sec_switch = 1;
+		return 0;
+	}
+#endif /* CONFIG_P2P */
 
 	if (conf->secondary_channel) {
 		struct wpa_supplicant *iface;
@@ -839,9 +873,10 @@ static void ap_wps_event_cb(void *ctx, enum wps_event event,
 
 
 static void ap_sta_authorized_cb(void *ctx, const u8 *mac_addr,
-				 int authorized, const u8 *p2p_dev_addr)
+				 int authorized, const u8 *p2p_dev_addr,
+				 const u8 *ip)
 {
-	wpas_notify_sta_authorized(ctx, mac_addr, authorized, p2p_dev_addr);
+	wpas_notify_sta_authorized(ctx, mac_addr, authorized, p2p_dev_addr, ip);
 }
 
 
@@ -1031,6 +1066,7 @@ int wpa_supplicant_create_ap(struct wpa_supplicant *wpa_s,
 		return -1;
 	hapd_iface->owner = wpa_s;
 	hapd_iface->drv_flags = wpa_s->drv_flags;
+	hapd_iface->drv_flags2 = wpa_s->drv_flags2;
 	hapd_iface->probe_resp_offloads = wpa_s->probe_resp_offloads;
 	hapd_iface->extended_capa = wpa_s->extended_capa;
 	hapd_iface->extended_capa_mask = wpa_s->extended_capa_mask;
@@ -1818,13 +1854,16 @@ int ap_ctrl_iface_chanswitch(struct wpa_supplicant *wpa_s, const char *pos)
 	if (ret)
 		return ret;
 
+	settings.link_id = -1;
+
 	return ap_switch_channel(wpa_s, &settings);
 }
 #endif /* CONFIG_CTRL_IFACE */
 
 
 void wpas_ap_ch_switch(struct wpa_supplicant *wpa_s, int freq, int ht,
-		       int offset, int width, int cf1, int cf2, int finished)
+		       int offset, int width, int cf1, int cf2,
+		       u16 punct_bitmap, int finished)
 {
 	struct hostapd_iface *iface = wpa_s->ap_iface;
 
@@ -1836,7 +1875,8 @@ void wpas_ap_ch_switch(struct wpa_supplicant *wpa_s, int freq, int ht,
 	if (wpa_s->current_ssid)
 		wpa_s->current_ssid->frequency = freq;
 	hostapd_event_ch_switch(iface->bss[0], freq, ht,
-				offset, width, cf1, cf2, finished);
+				offset, width, cf1, cf2, punct_bitmap,
+				finished);
 }
 
 

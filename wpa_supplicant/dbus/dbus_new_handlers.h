@@ -157,6 +157,9 @@ DBusMessage *
 wpas_dbus_handler_interworking_select(DBusMessage *message,
 				      struct wpa_supplicant *wpa_s);
 
+DBusMessage *
+wpas_dbus_handler_anqp_get(DBusMessage *message, struct wpa_supplicant *wpa_s);
+
 DECLARE_ACCESSOR(wpas_dbus_getter_capabilities);
 DECLARE_ACCESSOR(wpas_dbus_getter_state);
 DECLARE_ACCESSOR(wpas_dbus_getter_scanning);
@@ -216,6 +219,7 @@ DECLARE_ACCESSOR(wpas_dbus_getter_bss_rsn);
 DECLARE_ACCESSOR(wpas_dbus_getter_bss_wps);
 DECLARE_ACCESSOR(wpas_dbus_getter_bss_ies);
 DECLARE_ACCESSOR(wpas_dbus_getter_bss_age);
+DECLARE_ACCESSOR(wpas_dbus_getter_bss_anqp);
 DECLARE_ACCESSOR(wpas_dbus_getter_enabled);
 DECLARE_ACCESSOR(wpas_dbus_setter_enabled);
 DECLARE_ACCESSOR(wpas_dbus_getter_network_properties);

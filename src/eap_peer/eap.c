@@ -1757,6 +1757,11 @@ struct wpabuf * eap_sm_buildIdentity(struct eap_sm *sm, int id, int encrypted)
 		return NULL;
 
 	wpabuf_put_data(resp, identity, identity_len);
+
+	os_free(sm->identity);
+	sm->identity = os_memdup(identity, identity_len);
+	sm->identity_len = identity_len;
+
 	wpabuf_free(privacy_identity);
 
 	return resp;
@@ -2216,9 +2221,15 @@ struct eap_sm * eap_peer_sm_init(void *eapol_ctx,
 	dl_list_init(&sm->erp_keys);
 
 	os_memset(&tlsconf, 0, sizeof(tlsconf));
+#ifndef CONFIG_OPENSC_ENGINE_PATH
 	tlsconf.opensc_engine_path = conf->opensc_engine_path;
+#endif /* CONFIG_OPENSC_ENGINE_PATH */
+#ifndef CONFIG_PKCS11_ENGINE_PATH
 	tlsconf.pkcs11_engine_path = conf->pkcs11_engine_path;
+#endif /* CONFIG_PKCS11_ENGINE_PATH */
+#ifndef CONFIG_PKCS11_MODULE_PATH
 	tlsconf.pkcs11_module_path = conf->pkcs11_module_path;
+#endif /* CONFIG_PKCS11_MODULE_PATH */
 	tlsconf.openssl_ciphers = conf->openssl_ciphers;
 #ifdef CONFIG_FIPS
 	tlsconf.fips_mode = 1;
@@ -2262,6 +2273,7 @@ void eap_peer_sm_deinit(struct eap_sm *sm)
 		tls_deinit(sm->ssl_ctx2);
 	tls_deinit(sm->ssl_ctx);
 	eap_peer_erp_free_keys(sm);
+	os_free(sm->identity);
 	os_free(sm);
 }
 

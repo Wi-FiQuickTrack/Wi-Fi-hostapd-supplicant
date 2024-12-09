@@ -1,6 +1,6 @@
 /*
  * Wrapper functions for OpenSSL libcrypto
- * Copyright (c) 2004-2022, Jouni Malinen <j@w1.fi>
+ * Copyright (c) 2004-2024, Jouni Malinen <j@w1.fi>
  *
  * This software may be distributed under the terms of the BSD license.
  * See README for more details.
@@ -31,6 +31,11 @@
 #else /* OpenSSL version >= 3.0 */
 #include <openssl/cmac.h>
 #endif /* OpenSSL version >= 3.0 */
+#ifdef CONFIG_DPP3
+#if OPENSSL_VERSION_NUMBER >= 0x30200000L
+#include <openssl/hpke.h>
+#endif
+#endif /* CONFIG_DPP3 */
 
 #include "common.h"
 #include "utils/const_time.h"
@@ -471,11 +476,11 @@ void * aes_encrypt_init(const u8 *key, size_t len)
 	ctx = EVP_CIPHER_CTX_new();
 	if (ctx == NULL)
 		return NULL;
-	if (EVP_EncryptInit_ex(ctx, type, NULL, key, NULL) != 1) {
+	if (EVP_EncryptInit_ex(ctx, type, NULL, key, NULL) != 1 ||
+	    EVP_CIPHER_CTX_set_padding(ctx, 0) != 1) {
 		EVP_CIPHER_CTX_free(ctx);
 		return NULL;
 	}
-	EVP_CIPHER_CTX_set_padding(ctx, 0);
 	return ctx;
 }
 
@@ -528,11 +533,11 @@ void * aes_decrypt_init(const u8 *key, size_t len)
 	ctx = EVP_CIPHER_CTX_new();
 	if (ctx == NULL)
 		return NULL;
-	if (EVP_DecryptInit_ex(ctx, type, NULL, key, NULL) != 1) {
+	if (EVP_DecryptInit_ex(ctx, type, NULL, key, NULL) != 1 ||
+	    EVP_CIPHER_CTX_set_padding(ctx, 0) != 1) {
 		EVP_CIPHER_CTX_free(ctx);
 		return NULL;
 	}
-	EVP_CIPHER_CTX_set_padding(ctx, 0);
 	return ctx;
 }
 
@@ -1313,6 +1318,7 @@ struct crypto_hash {
 #else /* OpenSSL version >= 3.0 */
 	HMAC_CTX *ctx;
 #endif /* OpenSSL version >= 3.0 */
+	bool failed;
 };
 
 
@@ -1425,9 +1431,11 @@ void crypto_hash_update(struct crypto_hash *ctx, const u8 *data, size_t len)
 	if (ctx == NULL)
 		return;
 #if OPENSSL_VERSION_NUMBER >= 0x30000000L
-	EVP_MAC_update(ctx->ctx, data, len);
+	if (!EVP_MAC_update(ctx->ctx, data, len))
+		ctx->failed = true;
 #else /* OpenSSL version >= 3.0 */
-	HMAC_Update(ctx->ctx, data, len);
+	if (!HMAC_Update(ctx->ctx, data, len))
+		ctx->failed = true;
 #endif /* OpenSSL version >= 3.0 */
 }
 
@@ -1437,6 +1445,7 @@ int crypto_hash_finish(struct crypto_hash *ctx, u8 *mac, size_t *len)
 #if OPENSSL_VERSION_NUMBER >= 0x30000000L
 	size_t mdlen;
 	int res;
+	bool failed;
 
 	if (!ctx)
 		return -2;
@@ -1455,10 +1464,14 @@ int crypto_hash_finish(struct crypto_hash *ctx, u8 *mac, size_t *len)
 	}
 	res = EVP_MAC_final(ctx->ctx, mac, &mdlen, mdlen);
 	EVP_MAC_CTX_free(ctx->ctx);
+	failed = ctx->failed;
 	bin_clear_free(ctx, sizeof(*ctx));
 
 	if (TEST_FAIL())
 		return -1;
+
+	if (failed)
+		return -2;
 
 	if (res == 1) {
 		*len = mdlen;
@@ -1469,6 +1482,7 @@ int crypto_hash_finish(struct crypto_hash *ctx, u8 *mac, size_t *len)
 #else /* OpenSSL version >= 3.0 */
 	unsigned int mdlen;
 	int res;
+	bool failed;
 
 	if (ctx == NULL)
 		return -2;
@@ -1482,10 +1496,14 @@ int crypto_hash_finish(struct crypto_hash *ctx, u8 *mac, size_t *len)
 	mdlen = *len;
 	res = HMAC_Final(ctx->ctx, mac, &mdlen);
 	HMAC_CTX_free(ctx->ctx);
+	failed = ctx->failed;
 	bin_clear_free(ctx, sizeof(*ctx));
 
 	if (TEST_FAIL())
 		return -1;
+
+	if (failed)
+		return -2;
 
 	if (res == 1) {
 		*len = mdlen;
@@ -1817,6 +1835,7 @@ int omac1_aes_vector(const u8 *key, size_t key_len, size_t num_elem,
 	ret = 0;
 fail:
 	EVP_MAC_CTX_free(ctx);
+	EVP_MAC_free(emac);
 	return ret;
 #else /* OpenSSL version >= 3.0 */
 	CMAC_CTX *ctx;
@@ -2856,8 +2875,10 @@ struct wpabuf * crypto_ecdh_set_peerkey(struct crypto_ecdh *ecdh, int inc_y,
 
 	/* Encode using SECG SEC 1, Sec. 2.3.4 format */
 	peer = os_malloc(1 + len);
-	if (!peer)
+	if (!peer) {
+		EVP_PKEY_free(peerkey);
 		return NULL;
+	}
 	peer[0] = inc_y ? 0x04 : 0x02;
 	os_memcpy(peer + 1, key, len);
 
@@ -3012,11 +3033,15 @@ struct crypto_ec_key * crypto_ec_key_parse_priv(const u8 *der, size_t der_len)
 		NULL, NULL);
 	if (!ctx ||
 	    OSSL_DECODER_from_data(ctx, &der, &der_len) != 1) {
-		wpa_printf(MSG_INFO, "OpenSSL: Decoding EC private key (DER) failed: %s",
+		wpa_printf(MSG_INFO,
+			   "OpenSSL: Decoding EC private key (DER) failed: %s",
 			   ERR_error_string(ERR_get_error(), NULL));
+		if (ctx)
+			OSSL_DECODER_CTX_free(ctx);
 		goto fail;
 	}
 
+	OSSL_DECODER_CTX_free(ctx);
 	return (struct crypto_ec_key *) pkey;
 fail:
 	crypto_ec_key_deinit((struct crypto_ec_key *) pkey);
@@ -3923,9 +3948,10 @@ static int openssl_evp_pkey_ec_prime_len(struct crypto_ec_key *key)
 	group = EC_GROUP_new_by_curve_name(nid);
 	prime = BN_new();
 	if (!group || !prime)
-		return -1;
+		goto fail;
 	if (EC_GROUP_get_curve(group, prime, NULL, NULL, NULL) == 1)
 		prime_len = BN_num_bytes(prime);
+fail:
 	EC_GROUP_free(group);
 	BN_free(prime);
 	return prime_len;
@@ -4871,7 +4897,7 @@ hpke_labeled_expand(struct hpke_context *ctx, bool kem, const u8 *prk,
 #if OPENSSL_VERSION_NUMBER >= 0x30000000L
 	hmac = EVP_MAC_fetch(NULL, "HMAC", NULL);
 	if (!hmac)
-		return -1;
+		goto fail;
 
 	params[0] = OSSL_PARAM_construct_utf8_string(
 		"digest",
@@ -4880,7 +4906,7 @@ hpke_labeled_expand(struct hpke_context *ctx, bool kem, const u8 *prk,
 #else /* OpenSSL version >= 3.0 */
 	hctx = HMAC_CTX_new();
 	if (!hctx)
-		return -1;
+		goto fail;
 #endif /* OpenSSL version >= 3.0 */
 
 	while (left > 0) {
@@ -4889,7 +4915,7 @@ hpke_labeled_expand(struct hpke_context *ctx, bool kem, const u8 *prk,
 		EVP_MAC_CTX_free(hctx);
 		hctx = EVP_MAC_CTX_new(hmac);
 		if (!hctx)
-			return -1;
+			goto fail;
 
 		if (EVP_MAC_init(hctx, prk, mdlen, params) != 1)
 			goto fail;
@@ -5140,13 +5166,13 @@ fail:
 }
 
 
-struct wpabuf * hpke_base_seal(enum hpke_kem_id kem_id,
-			       enum hpke_kdf_id kdf_id,
-			       enum hpke_aead_id aead_id,
-			       struct crypto_ec_key *peer_pub,
-			       const u8 *info, size_t info_len,
-			       const u8 *aad, size_t aad_len,
-			       const u8 *pt, size_t pt_len)
+static struct wpabuf * hpke_base_seal_int(enum hpke_kem_id kem_id,
+					  enum hpke_kdf_id kdf_id,
+					  enum hpke_aead_id aead_id,
+					  struct crypto_ec_key *peer_pub,
+					  const u8 *info, size_t info_len,
+					  const u8 *aad, size_t aad_len,
+					  const u8 *pt, size_t pt_len)
 {
 	struct hpke_context *ctx;
 	u8 shared_secret[HPKE_MAX_SHARED_SECRET_LEN];
@@ -5304,13 +5330,13 @@ fail:
 }
 
 
-struct wpabuf * hpke_base_open(enum hpke_kem_id kem_id,
-			       enum hpke_kdf_id kdf_id,
-			       enum hpke_aead_id aead_id,
-			       struct crypto_ec_key *own_priv,
-			       const u8 *info, size_t info_len,
-			       const u8 *aad, size_t aad_len,
-			       const u8 *enc_ct, size_t enc_ct_len)
+static struct wpabuf * hpke_base_open_int(enum hpke_kem_id kem_id,
+					  enum hpke_kdf_id kdf_id,
+					  enum hpke_aead_id aead_id,
+					  struct crypto_ec_key *own_priv,
+					  const u8 *info, size_t info_len,
+					  const u8 *aad, size_t aad_len,
+					  const u8 *enc_ct, size_t enc_ct_len)
 {
 	struct hpke_context *ctx;
 	u8 shared_secret[HPKE_MAX_SHARED_SECRET_LEN];
@@ -5338,6 +5364,231 @@ fail:
 	hpke_free_context(ctx);
 	return pt;
 }
+
+
+#if OPENSSL_VERSION_NUMBER >= 0x30200000L
+
+static bool hpke_set_suite(OSSL_HPKE_SUITE *suite,
+			   enum hpke_kem_id kem_id,
+			   enum hpke_kdf_id kdf_id,
+			   enum hpke_aead_id aead_id)
+{
+	os_memset(suite, 0, sizeof(*suite));
+
+	switch (kem_id) {
+	case HPKE_DHKEM_P256_HKDF_SHA256:
+		suite->kem_id = OSSL_HPKE_KEM_ID_P256;
+		break;
+	case HPKE_DHKEM_P384_HKDF_SHA384:
+		suite->kem_id = OSSL_HPKE_KEM_ID_P384;
+		break;
+	case HPKE_DHKEM_P521_HKDF_SHA512:
+		suite->kem_id = OSSL_HPKE_KEM_ID_P521;
+		break;
+	default:
+		return false;
+	}
+
+	switch (kdf_id) {
+	case HPKE_KDF_HKDF_SHA256:
+		suite->kdf_id = OSSL_HPKE_KDF_ID_HKDF_SHA256;
+		break;
+	case HPKE_KDF_HKDF_SHA384:
+		suite->kdf_id = OSSL_HPKE_KDF_ID_HKDF_SHA384;
+		break;
+	case HPKE_KDF_HKDF_SHA512:
+		suite->kdf_id = OSSL_HPKE_KDF_ID_HKDF_SHA512;
+		break;
+	default:
+		return false;
+	}
+
+	switch (aead_id) {
+	case HPKE_AEAD_AES_128_GCM:
+		suite->aead_id = OSSL_HPKE_AEAD_ID_AES_GCM_128;
+		break;
+	case HPKE_AEAD_AES_256_GCM:
+		suite->aead_id = OSSL_HPKE_AEAD_ID_AES_GCM_256;
+		break;
+	default:
+		return false;
+	}
+
+	if (!OSSL_HPKE_suite_check(*suite)) {
+		wpa_printf(MSG_INFO,
+			   "OpenSSL: HPKE suite kem_id=%d kdf_id=%d aead_id=%d not supported",
+			   kem_id, kdf_id, aead_id);
+		return false;
+	}
+
+	return true;
+}
+
+
+struct wpabuf * hpke_base_seal(enum hpke_kem_id kem_id,
+			       enum hpke_kdf_id kdf_id,
+			       enum hpke_aead_id aead_id,
+			       struct crypto_ec_key *peer_pub,
+			       const u8 *info, size_t info_len,
+			       const u8 *aad, size_t aad_len,
+			       const u8 *pt, size_t pt_len)
+{
+	OSSL_HPKE_SUITE suite;
+	OSSL_HPKE_CTX *ctx = NULL;
+	struct wpabuf *res = NULL, *buf, *pub = NULL;
+	size_t enc_len, ct_len;
+	int group;
+
+	group = crypto_ec_key_group(peer_pub);
+	if (group == 28 || group == 29 || group == 30) {
+		/* Use the internal routines for the special DPP use case with
+		 * brainpool curves, */
+		return hpke_base_seal_int(kem_id, kdf_id, aead_id, peer_pub,
+					  info, info_len, aad, aad_len,
+					  pt, pt_len);
+	}
+
+
+	if (!hpke_set_suite(&suite, kem_id, kdf_id, aead_id))
+		return NULL;
+
+	enc_len = OSSL_HPKE_get_public_encap_size(suite);
+	ct_len = OSSL_HPKE_get_ciphertext_size(suite, pt_len);
+	buf = wpabuf_alloc(enc_len + ct_len);
+	if (!buf)
+		goto out;
+
+	pub = crypto_ec_key_get_pubkey_point(peer_pub, 1);
+	if (!pub)
+		goto out;
+
+	ctx = OSSL_HPKE_CTX_new(OSSL_HPKE_MODE_BASE, suite,
+				OSSL_HPKE_ROLE_SENDER, NULL, NULL);
+	if (!ctx)
+		goto out;
+
+	if (OSSL_HPKE_encap(ctx, wpabuf_put(buf, 0), &enc_len,
+			    wpabuf_head(pub), wpabuf_len(pub),
+			    info, info_len) != 1) {
+		wpa_printf(MSG_DEBUG, "OpenSSL: OSSL_HPKE_encap failed: %s",
+			   ERR_error_string(ERR_get_error(), NULL));
+		goto out;
+	}
+	wpabuf_put(buf, enc_len);
+
+	if (OSSL_HPKE_seal(ctx, wpabuf_put(buf, 0), &ct_len, aad, aad_len,
+			   pt, pt_len) != 1) {
+		wpa_printf(MSG_DEBUG, "OpenSSL: OSSL_HPKE_seal failed: %s",
+			   ERR_error_string(ERR_get_error(), NULL));
+		goto out;
+	}
+	wpabuf_put(buf, ct_len);
+	res = buf;
+	buf = NULL;
+
+out:
+	OSSL_HPKE_CTX_free(ctx);
+	wpabuf_free(buf);
+	wpabuf_free(pub);
+	return res;
+}
+
+
+struct wpabuf * hpke_base_open(enum hpke_kem_id kem_id,
+			       enum hpke_kdf_id kdf_id,
+			       enum hpke_aead_id aead_id,
+			       struct crypto_ec_key *own_priv,
+			       const u8 *info, size_t info_len,
+			       const u8 *aad, size_t aad_len,
+			       const u8 *enc_ct, size_t enc_ct_len)
+{
+	OSSL_HPKE_SUITE suite;
+	OSSL_HPKE_CTX *ctx;
+	struct wpabuf *buf = NULL, *res = NULL;
+	size_t len, enc_len;
+	int group;
+
+	group = crypto_ec_key_group(own_priv);
+	if (group == 28 || group == 29 || group == 30) {
+		/* Use the internal routines for the special DPP use case with
+		 * brainpool curves, */
+		return hpke_base_open_int(kem_id, kdf_id, aead_id, own_priv,
+					  info, info_len, aad, aad_len,
+					  enc_ct, enc_ct_len);
+	}
+
+	if (!hpke_set_suite(&suite, kem_id, kdf_id, aead_id))
+		return NULL;
+
+	enc_len = OSSL_HPKE_get_public_encap_size(suite);
+	if (enc_ct_len < enc_len) {
+		wpa_printf(MSG_DEBUG, "OpenSSL: Too short HPKE enc_ct data");
+		return NULL;
+	}
+
+	ctx = OSSL_HPKE_CTX_new(OSSL_HPKE_MODE_BASE, suite,
+				OSSL_HPKE_ROLE_RECEIVER, NULL, NULL);
+	if (!ctx)
+		goto out;
+
+	if (OSSL_HPKE_decap(ctx, enc_ct, enc_len, (EVP_PKEY *) own_priv,
+			    info, info_len) != 1) {
+		wpa_printf(MSG_DEBUG, "OpenSSL: OSSL_HPKE_decap failed: %s",
+			   ERR_error_string(ERR_get_error(), NULL));
+		goto out;
+	}
+
+	len = enc_ct_len;
+	buf = wpabuf_alloc(len);
+	if (!buf)
+		goto out;
+
+	if (OSSL_HPKE_open(ctx, wpabuf_put(buf, 0), &len, aad, aad_len,
+			   enc_ct + enc_len, enc_ct_len - enc_len) != 1) {
+		wpa_printf(MSG_DEBUG, "OpenSSL: OSSL_HPKE_open failed: %s",
+			   ERR_error_string(ERR_get_error(), NULL));
+		goto out;
+	}
+
+	wpabuf_put(buf, len);
+	res = buf;
+	buf = NULL;
+
+out:
+	OSSL_HPKE_CTX_free(ctx);
+	wpabuf_free(buf);
+	return res;
+}
+
+#else /* OpenSSL < 3.2 */
+
+struct wpabuf * hpke_base_seal(enum hpke_kem_id kem_id,
+			       enum hpke_kdf_id kdf_id,
+			       enum hpke_aead_id aead_id,
+			       struct crypto_ec_key *peer_pub,
+			       const u8 *info, size_t info_len,
+			       const u8 *aad, size_t aad_len,
+			       const u8 *pt, size_t pt_len)
+{
+	return hpke_base_seal_int(kem_id, kdf_id, aead_id, peer_pub,
+				  info, info_len, aad, aad_len, pt, pt_len);
+}
+
+
+struct wpabuf * hpke_base_open(enum hpke_kem_id kem_id,
+			       enum hpke_kdf_id kdf_id,
+			       enum hpke_aead_id aead_id,
+			       struct crypto_ec_key *own_priv,
+			       const u8 *info, size_t info_len,
+			       const u8 *aad, size_t aad_len,
+			       const u8 *enc_ct, size_t enc_ct_len)
+{
+	return hpke_base_open_int(kem_id, kdf_id, aead_id, own_priv,
+				  info, info_len, aad, aad_len,
+				  enc_ct, enc_ct_len);
+}
+
+#endif /* OpenSSL < 3.2 */
 
 #endif /* CONFIG_DPP3 */
 

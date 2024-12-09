@@ -30,7 +30,7 @@ static struct ibss_rsn_peer * ibss_rsn_get_peer(struct ibss_rsn *ibss_rsn,
 	struct ibss_rsn_peer *peer;
 
 	for (peer = ibss_rsn->peers; peer; peer = peer->next)
-		if (os_memcmp(addr, peer->addr, ETH_ALEN) == 0)
+		if (ether_addr_equal(addr, peer->addr))
 			break;
 	return peer;
 }
@@ -484,8 +484,8 @@ static int ibss_rsn_auth_init(struct ibss_rsn *ibss_rsn,
 				"\x00\x0f\xac\x04"
 				"\x01\x00\x00\x0f\xac\x04"
 				"\x01\x00\x00\x0f\xac\x02"
-				"\x00\x00", 22, NULL, 0, NULL, 0, NULL, 0) !=
-	    WPA_IE_OK) {
+				"\x00\x00", 22, NULL, 0, NULL, 0, NULL, 0,
+				NULL) != WPA_IE_OK) {
 		wpa_printf(MSG_DEBUG, "AUTH: wpa_validate_wpa_ie() failed");
 		return -1;
 	}
@@ -672,7 +672,7 @@ void ibss_rsn_stop(struct ibss_rsn *ibss_rsn, const u8 *peermac)
 
 		for (prev = NULL, peer = ibss_rsn->peers; peer != NULL;
 		     prev = peer, peer = peer->next) {
-			if (os_memcmp(peermac, peer->addr, ETH_ALEN) == 0) {
+			if (ether_addr_equal(peermac, peer->addr)) {
 				if (prev == NULL)
 					ibss_rsn->peers = peer->next;
 				else

@@ -19,6 +19,8 @@ struct ptksa_cache {
 	unsigned int n_ptksa;
 };
 
+#ifdef CONFIG_PTKSA_CACHE
+
 static void ptksa_cache_set_expiration(struct ptksa_cache *ptksa);
 
 
@@ -141,7 +143,7 @@ struct ptksa_cache_entry * ptksa_cache_get(struct ptksa_cache *ptksa,
 		return NULL;
 
 	dl_list_for_each(e, &ptksa->ptksa, struct ptksa_cache_entry, list) {
-		if ((!addr || os_memcmp(e->addr, addr, ETH_ALEN) == 0) &&
+		if ((!addr || ether_addr_equal(e->addr, addr)) &&
 		    (cipher == WPA_CIPHER_NONE || cipher == e->cipher))
 			return e;
 	}
@@ -238,7 +240,7 @@ void ptksa_cache_flush(struct ptksa_cache *ptksa, const u8 *addr, u32 cipher)
 
 	dl_list_for_each_safe(e, next, &ptksa->ptksa, struct ptksa_cache_entry,
 			      list) {
-		if ((!addr || os_memcmp(e->addr, addr, ETH_ALEN) == 0) &&
+		if ((!addr || ether_addr_equal(e->addr, addr)) &&
 		    (cipher == WPA_CIPHER_NONE || cipher == e->cipher)) {
 			wpa_printf(MSG_DEBUG,
 				   "Flush PTKSA cache entry for " MACSTR,
@@ -342,3 +344,44 @@ struct ptksa_cache_entry * ptksa_cache_add(struct ptksa_cache *ptksa,
 
 	return entry;
 }
+
+#else /* CONFIG_PTKSA_CACHE */
+
+struct ptksa_cache * ptksa_cache_init(void)
+{
+	return (struct ptksa_cache *) 1;
+}
+
+
+void ptksa_cache_deinit(struct ptksa_cache *ptksa)
+{
+}
+
+
+struct ptksa_cache_entry *
+ptksa_cache_get(struct ptksa_cache *ptksa, const u8 *addr, u32 cipher)
+{
+	return NULL;
+}
+
+
+int ptksa_cache_list(struct ptksa_cache *ptksa, char *buf, size_t len)
+{
+	return -1;
+}
+
+
+struct ptksa_cache_entry *
+ptksa_cache_add(struct ptksa_cache *ptksa, const u8 *own_addr, const u8 *addr,
+		u32 cipher, u32 life_time, const struct wpa_ptk *ptk,
+		void (*cb)(struct ptksa_cache_entry *e), void *ctx, u32 akmp)
+{
+	return NULL;
+}
+
+
+void ptksa_cache_flush(struct ptksa_cache *ptksa, const u8 *addr, u32 cipher)
+{
+}
+
+#endif /* CONFIG_PTKSA_CACHE */

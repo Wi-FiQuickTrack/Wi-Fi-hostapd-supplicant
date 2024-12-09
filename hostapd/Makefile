@@ -85,6 +85,7 @@ OBJS += ../src/ap/beacon.o
 OBJS += ../src/ap/bss_load.o
 OBJS += ../src/ap/neighbor_db.o
 OBJS += ../src/ap/rrm.o
+OBJS += ../src/common/ptksa_cache.o
 
 OBJS_c = hostapd_cli.o
 OBJS_c += ../src/common/wpa_ctrl.o
@@ -168,7 +169,7 @@ OBJS += ../src/eapol_auth/eapol_auth_sm.o
 
 
 ifdef CONFIG_CODE_COVERAGE
-CFLAGS += -O0 -fprofile-arcs -ftest-coverage
+CFLAGS += -O0 -fprofile-arcs -ftest-coverage -U_FORTIFY_SOURCE
 LIBS += -lgcov
 LIBS_c += -lgcov
 LIBS_h += -lgcov
@@ -276,6 +277,8 @@ ifdef CONFIG_OCV
 CFLAGS += -DCONFIG_OCV
 OBJS += ../src/common/ocv.o
 endif
+
+NEED_AES_UNWRAP=y
 
 ifdef CONFIG_IEEE80211R
 CFLAGS += -DCONFIG_IEEE80211R -DCONFIG_IEEE80211R_AP
@@ -609,6 +612,12 @@ CFLAGS += -DCONFIG_DPP3
 endif
 endif
 
+ifdef CONFIG_NAN_USD
+OBJS += ../src/common/nan_de.o
+OBJS += ../src/ap/nan_usd_ap.o
+CFLAGS += -DCONFIG_NAN_USD
+endif
+
 ifdef CONFIG_PASN
 CFLAGS += -DCONFIG_PASN
 CFLAGS += -DCONFIG_PTKSA_CACHE
@@ -616,7 +625,6 @@ NEED_HMAC_SHA256_KDF=y
 NEED_HMAC_SHA384_KDF=y
 NEED_SHA256=y
 NEED_SHA384=y
-OBJS += ../src/common/ptksa_cache.o
 endif
 
 ifdef CONFIG_EAP_IKEV2
@@ -676,6 +684,11 @@ endif
 
 ifdef CHAP
 OBJS += ../src/eap_common/chap.o
+endif
+
+ifdef CONFIG_RADIUS_TLS
+TLS_FUNCS=y
+CFLAGS += -DCONFIG_RADIUS_TLS
 endif
 
 ifdef TLS_FUNCS
@@ -1188,6 +1201,7 @@ OBJS += ../src/ap/wmm.o
 OBJS += ../src/ap/ap_list.o
 OBJS += ../src/ap/comeback_token.o
 OBJS += ../src/pasn/pasn_responder.o
+OBJS += ../src/pasn/pasn_common.o
 OBJS += ../src/ap/ieee802_11.o
 OBJS += ../src/ap/hw_features.o
 OBJS += ../src/ap/dfs.o

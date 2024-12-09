@@ -142,6 +142,23 @@ static int auth_start_ampe(void *ctx, const u8 *addr)
 }
 
 
+static int auth_for_each_sta(
+	void *ctx, int (*cb)(struct wpa_state_machine *sm, void *ctx),
+	void *cb_ctx)
+{
+	struct mesh_rsn *rsn = ctx;
+	struct hostapd_data *hapd;
+	struct sta_info *sta;
+
+	hapd = rsn->wpa_s->ifmsh->bss[0];
+	for (sta = hapd->sta_list; sta; sta = sta->next) {
+		if (sta->wpa_sm && cb(sta->wpa_sm, cb_ctx))
+			return 1;
+	}
+	return 0;
+}
+
+
 static int __mesh_rsn_auth_init(struct mesh_rsn *rsn, const u8 *addr,
 				enum mfp_options ieee80211w, int ocv)
 {
@@ -151,6 +168,7 @@ static int __mesh_rsn_auth_init(struct mesh_rsn *rsn, const u8 *addr,
 		.get_psk = auth_get_psk,
 		.set_key = auth_set_key,
 		.start_ampe = auth_start_ampe,
+		.for_each_sta = auth_for_each_sta,
 	};
 	u8 seq[6] = {};
 
@@ -386,7 +404,8 @@ int mesh_rsn_auth_sae_sta(struct wpa_supplicant *wpa_s,
 			   " - try to use PMKSA caching instead of new SAE authentication",
 			   MAC2STR(sta->addr));
 		wpa_auth_pmksa_set_to_sm(pmksa, sta->wpa_sm, hapd->wpa_auth,
-					 sta->sae->pmkid, sta->sae->pmk);
+					 sta->sae->pmkid, sta->sae->pmk,
+					 &sta->sae->pmk_len);
 		sae_accept_sta(hapd, sta);
 		sta->mesh_sae_pmksa_caching = 1;
 		return 0;

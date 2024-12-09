@@ -237,6 +237,12 @@ static void wpas_dpp_auth_resp_retry(struct wpa_supplicant *wpa_s)
 		wait_time = wpa_s->dpp_resp_retry_time;
 	else
 		wait_time = 1000;
+	if (wpa_s->dpp_tx_chan_change) {
+		wpa_s->dpp_tx_chan_change = false;
+		if (wait_time > 100)
+			wait_time = 100;
+	}
+
 	wpa_printf(MSG_DEBUG,
 		   "DPP: Schedule retransmission of Authentication Response frame in %u ms",
 		wait_time);
@@ -431,8 +437,9 @@ void wpas_dpp_send_conn_status_result(struct wpa_supplicant *wpa_s,
 }
 
 
-void wpas_dpp_connected(struct wpa_supplicant *wpa_s)
+static void wpas_dpp_connected_timeout(void *eloop_ctx, void *timeout_ctx)
 {
+	struct wpa_supplicant *wpa_s = eloop_ctx;
 	struct dpp_authentication *auth = wpa_s->dpp_auth;
 
 	if ((auth && auth->conn_status_requested) ||
@@ -440,7 +447,55 @@ void wpas_dpp_connected(struct wpa_supplicant *wpa_s)
 		wpas_dpp_send_conn_status_result(wpa_s, DPP_STATUS_OK);
 }
 
+
+void wpas_dpp_connected(struct wpa_supplicant *wpa_s)
+{
+	struct dpp_authentication *auth = wpa_s->dpp_auth;
+
+	if ((auth && auth->conn_status_requested) ||
+	    dpp_tcp_conn_status_requested(wpa_s->dpp)) {
+		/* Report connection result from an eloop timeout to avoid delay
+		 * to completing all connection completion steps since this
+		 * function is called in a middle of the post 4-way handshake
+		 * processing. */
+		eloop_register_timeout(0, 0, wpas_dpp_connected_timeout,
+				       wpa_s, NULL);
+	}
+}
+
 #endif /* CONFIG_DPP2 */
+
+
+static void wpas_dpp_drv_wait_timeout(void *eloop_ctx, void *timeout_ctx)
+{
+	struct wpa_supplicant *wpa_s = eloop_ctx;
+	struct dpp_authentication *auth = wpa_s->dpp_auth;
+
+	if (auth && auth->waiting_auth_resp) {
+		wpa_printf(MSG_DEBUG,
+			   "DPP: Call wpas_dpp_auth_init_next() from %s",
+			   __func__);
+		wpas_dpp_auth_init_next(wpa_s);
+	} else {
+		wpa_printf(MSG_DEBUG, "DPP: %s, but no waiting_auth_resp",
+			   __func__);
+	}
+}
+
+
+static void wpas_dpp_neg_freq_timeout(void *eloop_ctx, void *timeout_ctx)
+{
+	struct wpa_supplicant *wpa_s = eloop_ctx;
+	struct dpp_authentication *auth = wpa_s->dpp_auth;
+
+	if (!wpa_s->dpp_listen_on_tx_expire || !auth || !auth->neg_freq)
+		return;
+
+	wpa_printf(MSG_DEBUG,
+		   "DPP: Start listen on neg_freq %u MHz based on timeout for TX wait expiration",
+		   auth->neg_freq);
+	wpas_dpp_listen_start(wpa_s, auth->neg_freq);
+}
 
 
 static void wpas_dpp_tx_status(struct wpa_supplicant *wpa_s,
@@ -519,7 +574,12 @@ static void wpas_dpp_tx_status(struct wpa_supplicant *wpa_s,
 			/* In case of DPP Authentication Request frame, move to
 			 * the next channel immediately. */
 			offchannel_send_action_done(wpa_s);
-			wpas_dpp_auth_init_next(wpa_s);
+			/* Call wpas_dpp_auth_init_next(wpa_s) from driver event
+			 * notifying frame wait was completed or from eloop
+			 * timeout. */
+			eloop_register_timeout(0, 10000,
+					       wpas_dpp_drv_wait_timeout,
+					       wpa_s, NULL);
 			return;
 		}
 		if (auth->waiting_auth_conf) {
@@ -553,7 +613,9 @@ static void wpas_dpp_tx_status(struct wpa_supplicant *wpa_s,
 			   wpa_s->dpp_auth->curr_freq,
 			   wpa_s->dpp_auth->neg_freq);
 		offchannel_send_action_done(wpa_s);
-		wpas_dpp_listen_start(wpa_s, wpa_s->dpp_auth->neg_freq);
+		wpa_s->dpp_listen_on_tx_expire = true;
+		eloop_register_timeout(0, 100000, wpas_dpp_neg_freq_timeout,
+				       wpa_s, NULL);
 	}
 
 	if (wpa_s->dpp_auth_ok_on_ack)
@@ -680,6 +742,8 @@ static int wpas_dpp_auth_init_next(struct wpa_supplicant *wpa_s)
 	const u8 *dst;
 	unsigned int wait_time, max_wait_time, freq, max_tries, used;
 	struct os_reltime now, diff;
+
+	eloop_cancel_timeout(wpas_dpp_drv_wait_timeout, wpa_s, NULL);
 
 	wpa_s->dpp_in_response_listen = 0;
 	if (!auth)
@@ -979,6 +1043,8 @@ static void dpp_start_listen_cb(struct wpa_radio_work *work, int deinit)
 	wpa_s->off_channel_freq = 0;
 	wpa_s->roc_waiting_drv_freq = lwork->freq;
 	wpa_drv_dpp_listen(wpa_s, true);
+	wpa_s->dpp_tx_auth_resp_on_roc_stop = false;
+	wpa_s->dpp_tx_chan_change = false;
 }
 
 
@@ -1078,10 +1144,57 @@ void wpas_dpp_remain_on_channel_cb(struct wpa_supplicant *wpa_s,
 }
 
 
+static void wpas_dpp_tx_auth_resp(struct wpa_supplicant *wpa_s)
+{
+	struct dpp_authentication *auth = wpa_s->dpp_auth;
+
+	if (!auth)
+		return;
+
+	wpa_msg(wpa_s, MSG_INFO, DPP_EVENT_TX "dst=" MACSTR " freq=%u type=%d",
+		MAC2STR(auth->peer_mac_addr), auth->curr_freq,
+		DPP_PA_AUTHENTICATION_RESP);
+	offchannel_send_action(wpa_s, auth->curr_freq,
+			       auth->peer_mac_addr, wpa_s->own_addr, broadcast,
+			       wpabuf_head(auth->resp_msg),
+			       wpabuf_len(auth->resp_msg),
+			       500, wpas_dpp_tx_status, 0);
+}
+
+
+static void wpas_dpp_tx_auth_resp_roc_timeout(void *eloop_ctx,
+					      void *timeout_ctx)
+{
+	struct wpa_supplicant *wpa_s = eloop_ctx;
+	struct dpp_authentication *auth = wpa_s->dpp_auth;
+
+	if (!auth || !wpa_s->dpp_tx_auth_resp_on_roc_stop)
+		return;
+
+	wpa_s->dpp_tx_auth_resp_on_roc_stop = false;
+	wpa_s->dpp_tx_chan_change = true;
+	wpa_printf(MSG_DEBUG,
+		   "DPP: Send postponed Authentication Response on remain-on-channel termination timeout");
+	wpas_dpp_tx_auth_resp(wpa_s);
+}
+
+
 void wpas_dpp_cancel_remain_on_channel_cb(struct wpa_supplicant *wpa_s,
 					  unsigned int freq)
 {
+	wpa_printf(MSG_DEBUG, "DPP: Remain on channel cancel for %u MHz", freq);
 	wpas_dpp_listen_work_done(wpa_s);
+
+	if (wpa_s->dpp_auth && wpa_s->dpp_tx_auth_resp_on_roc_stop) {
+		eloop_cancel_timeout(wpas_dpp_tx_auth_resp_roc_timeout,
+				     wpa_s, NULL);
+		wpa_s->dpp_tx_auth_resp_on_roc_stop = false;
+		wpa_s->dpp_tx_chan_change = true;
+		wpa_printf(MSG_DEBUG,
+			   "DPP: Send postponed Authentication Response on remain-on-channel termination");
+		wpas_dpp_tx_auth_resp(wpa_s);
+		return;
+	}
 
 	if (wpa_s->dpp_auth && wpa_s->dpp_in_response_listen) {
 		unsigned int new_freq;
@@ -1200,17 +1313,17 @@ static void wpas_dpp_rx_auth_req(struct wpa_supplicant *wpa_s, const u8 *src,
 		wpa_printf(MSG_DEBUG,
 			   "DPP: Stop listen on %u MHz to allow response on the request %u MHz",
 			   wpa_s->dpp_listen_freq, wpa_s->dpp_auth->curr_freq);
+		wpa_s->dpp_tx_auth_resp_on_roc_stop = true;
+		eloop_register_timeout(0, 100000,
+				       wpas_dpp_tx_auth_resp_roc_timeout,
+				       wpa_s, NULL);
 		wpas_dpp_listen_stop(wpa_s);
+		return;
 	}
+	wpa_s->dpp_tx_auth_resp_on_roc_stop = false;
+	wpa_s->dpp_tx_chan_change = false;
 
-	wpa_msg(wpa_s, MSG_INFO, DPP_EVENT_TX "dst=" MACSTR " freq=%u type=%d",
-		MAC2STR(src), wpa_s->dpp_auth->curr_freq,
-		DPP_PA_AUTHENTICATION_RESP);
-	offchannel_send_action(wpa_s, wpa_s->dpp_auth->curr_freq,
-			       src, wpa_s->own_addr, broadcast,
-			       wpabuf_head(wpa_s->dpp_auth->resp_msg),
-			       wpabuf_len(wpa_s->dpp_auth->resp_msg),
-			       500, wpas_dpp_tx_status, 0);
+	wpas_dpp_tx_auth_resp(wpa_s);
 }
 
 
@@ -1219,8 +1332,28 @@ void wpas_dpp_tx_wait_expire(struct wpa_supplicant *wpa_s)
 	struct dpp_authentication *auth = wpa_s->dpp_auth;
 	int freq;
 
-	if (!wpa_s->dpp_gas_server || !auth)
+	if (wpa_s->dpp_listen_on_tx_expire && auth && auth->neg_freq) {
+		wpa_printf(MSG_DEBUG,
+			   "DPP: Start listen on neg_freq %u MHz based on TX wait expiration on the previous channel",
+			   auth->neg_freq);
+		eloop_cancel_timeout(wpas_dpp_neg_freq_timeout, wpa_s, NULL);
+		wpas_dpp_listen_start(wpa_s, auth->neg_freq);
 		return;
+	}
+
+	if (!wpa_s->dpp_gas_server || !auth) {
+		if (auth && auth->waiting_auth_resp &&
+		    eloop_is_timeout_registered(wpas_dpp_drv_wait_timeout,
+						wpa_s, NULL)) {
+			eloop_cancel_timeout(wpas_dpp_drv_wait_timeout,
+					     wpa_s, NULL);
+			wpa_printf(MSG_DEBUG,
+				   "DPP: Call wpas_dpp_auth_init_next() from %s",
+				   __func__);
+			wpas_dpp_auth_init_next(wpa_s);
+		}
+		return;
+	}
 
 	freq = auth->neg_freq > 0 ? auth->neg_freq : auth->curr_freq;
 	if (wpa_s->dpp_listen_work || (int) wpa_s->dpp_listen_freq == freq)
@@ -1362,7 +1495,7 @@ static struct wpa_ssid * wpas_dpp_add_network(struct wpa_supplicant *wpa_s,
 
 		ssid->key_mgmt = WPA_KEY_MGMT_IEEE8021X |
 			WPA_KEY_MGMT_IEEE8021X_SHA256 |
-			WPA_KEY_MGMT_IEEE8021X_SHA256;
+			WPA_KEY_MGMT_IEEE8021X_SHA384;
 		ssid->ieee80211w = MGMT_FRAME_PROTECTION_OPTIONAL;
 
 		if (conf->cacert) {
@@ -1730,7 +1863,7 @@ static void wpas_dpp_gas_resp_cb(void *ctx, const u8 *addr, u8 dialog_token,
 	wpa_s->dpp_gas_dialog_token = -1;
 
 	if (!auth || (!auth->auth_success && !auth->reconfig_success) ||
-	    os_memcmp(addr, auth->peer_mac_addr, ETH_ALEN) != 0) {
+	    !ether_addr_equal(addr, auth->peer_mac_addr)) {
 		wpa_printf(MSG_DEBUG, "DPP: No matching exchange in progress");
 		return;
 	}
@@ -1863,7 +1996,11 @@ static void wpas_dpp_start_gas_client(struct wpa_supplicant *wpa_s)
 	offchannel_send_action_done(wpa_s);
 	wpas_dpp_listen_stop(wpa_s);
 
+#ifdef CONFIG_NO_RRM
+	supp_op_classes = NULL;
+#else /* CONFIG_NO_RRM */
 	supp_op_classes = wpas_supp_op_classes(wpa_s);
+#endif /* CONFIG_NO_RRM */
 	buf = dpp_build_conf_req_helper(auth, wpa_s->conf->dpp_name,
 					wpa_s->dpp_netrole,
 					wpa_s->conf->dpp_mud_url,
@@ -1943,7 +2080,7 @@ static void wpas_dpp_rx_auth_resp(struct wpa_supplicant *wpa_s, const u8 *src,
 	}
 
 	if (!is_zero_ether_addr(auth->peer_mac_addr) &&
-	    os_memcmp(src, auth->peer_mac_addr, ETH_ALEN) != 0) {
+	    !ether_addr_equal(src, auth->peer_mac_addr)) {
 		wpa_printf(MSG_DEBUG, "DPP: MAC address mismatch (expected "
 			   MACSTR ") - drop", MAC2STR(auth->peer_mac_addr));
 		return;
@@ -1997,7 +2134,7 @@ static void wpas_dpp_rx_auth_conf(struct wpa_supplicant *wpa_s, const u8 *src,
 		return;
 	}
 
-	if (os_memcmp(src, auth->peer_mac_addr, ETH_ALEN) != 0) {
+	if (!ether_addr_equal(src, auth->peer_mac_addr)) {
 		wpa_printf(MSG_DEBUG, "DPP: MAC address mismatch (expected "
 			   MACSTR ") - drop", MAC2STR(auth->peer_mac_addr));
 		return;
@@ -2098,7 +2235,7 @@ static void wpas_dpp_rx_conf_result(struct wpa_supplicant *wpa_s, const u8 *src,
 
 	if (!auth || !auth->waiting_conf_result) {
 		if (auth &&
-		    os_memcmp(src, auth->peer_mac_addr, ETH_ALEN) == 0 &&
+		    ether_addr_equal(src, auth->peer_mac_addr) &&
 		    gas_server_response_sent(wpa_s->gas_server,
 					     auth->gas_server_ctx)) {
 			/* This could happen if the TX status event gets delayed
@@ -2115,7 +2252,7 @@ static void wpas_dpp_rx_conf_result(struct wpa_supplicant *wpa_s, const u8 *src,
 		}
 	}
 
-	if (os_memcmp(src, auth->peer_mac_addr, ETH_ALEN) != 0) {
+	if (!ether_addr_equal(src, auth->peer_mac_addr)) {
 		wpa_printf(MSG_DEBUG, "DPP: MAC address mismatch (expected "
 			   MACSTR ") - drop", MAC2STR(auth->peer_mac_addr));
 		return;
@@ -2524,7 +2661,7 @@ wpas_dpp_rx_reconfig_auth_resp(struct wpa_supplicant *wpa_s, const u8 *src,
 		return;
 	}
 
-	if (os_memcmp(src, auth->peer_mac_addr, ETH_ALEN) != 0) {
+	if (!ether_addr_equal(src, auth->peer_mac_addr)) {
 		wpa_printf(MSG_DEBUG, "DPP: MAC address mismatch (expected "
 			   MACSTR ") - drop", MAC2STR(auth->peer_mac_addr));
 		return;
@@ -2568,7 +2705,7 @@ wpas_dpp_rx_reconfig_auth_conf(struct wpa_supplicant *wpa_s, const u8 *src,
 		return;
 	}
 
-	if (os_memcmp(src, auth->peer_mac_addr, ETH_ALEN) != 0) {
+	if (!ether_addr_equal(src, auth->peer_mac_addr)) {
 		wpa_printf(MSG_DEBUG, "DPP: MAC address mismatch (expected "
 			   MACSTR ") - drop", MAC2STR(auth->peer_mac_addr));
 		return;
@@ -2606,7 +2743,7 @@ static void wpas_dpp_rx_peer_disc_resp(struct wpa_supplicant *wpa_s,
 	wpa_printf(MSG_DEBUG, "DPP: Peer Discovery Response from " MACSTR,
 		   MAC2STR(src));
 	if (is_zero_ether_addr(wpa_s->dpp_intro_bssid) ||
-	    os_memcmp(src, wpa_s->dpp_intro_bssid, ETH_ALEN) != 0) {
+	    !ether_addr_equal(src, wpa_s->dpp_intro_bssid)) {
 		wpa_printf(MSG_DEBUG, "DPP: Not waiting for response from "
 			   MACSTR " - drop", MAC2STR(src));
 		return;
@@ -3770,7 +3907,7 @@ wpas_dpp_rx_priv_peer_intro_notify(struct wpa_supplicant *wpa_s,
 	wpa_printf(MSG_DEBUG, "DPP: Private Peer Introduction Notify from "
 		   MACSTR, MAC2STR(src));
 	if (is_zero_ether_addr(wpa_s->dpp_intro_bssid) ||
-	    os_memcmp(src, wpa_s->dpp_intro_bssid, ETH_ALEN) != 0) {
+	    !ether_addr_equal(src, wpa_s->dpp_intro_bssid)) {
 		wpa_printf(MSG_DEBUG, "DPP: Not waiting for response from "
 			   MACSTR " - drop", MAC2STR(src));
 		return;
@@ -4061,7 +4198,7 @@ wpas_dpp_gas_req_handler(void *ctx, void *resp_ctx, const u8 *sa,
 	wpa_printf(MSG_DEBUG, "DPP: GAS request from " MACSTR,
 		   MAC2STR(sa));
 	if (!auth || (!auth->auth_success && !auth->reconfig_success) ||
-	    os_memcmp(sa, auth->peer_mac_addr, ETH_ALEN) != 0) {
+	    !ether_addr_equal(sa, auth->peer_mac_addr)) {
 		wpa_printf(MSG_DEBUG, "DPP: No matching exchange in progress");
 		return NULL;
 	}
@@ -4075,6 +4212,13 @@ wpas_dpp_gas_req_handler(void *ctx, void *resp_ctx, const u8 *sa,
 		 * exchange. */
 		dpp_notify_auth_success(auth, 1);
 		wpa_s->dpp_auth_ok_on_ack = 0;
+#ifdef CONFIG_TESTING_OPTIONS
+		if (dpp_test == DPP_TEST_STOP_AT_AUTH_CONF) {
+			wpa_printf(MSG_INFO,
+				   "DPP: TESTING - stop at Authentication Confirm");
+			return NULL;
+		}
+#endif /* CONFIG_TESTING_OPTIONS */
 	}
 
 	wpa_hexdump(MSG_DEBUG,
@@ -4714,6 +4858,9 @@ void wpas_dpp_deinit(struct wpa_supplicant *wpa_s)
 	eloop_cancel_timeout(wpas_dpp_auth_resp_retry_timeout, wpa_s, NULL);
 	eloop_cancel_timeout(wpas_dpp_gas_initial_resp_timeout, wpa_s, NULL);
 	eloop_cancel_timeout(wpas_dpp_gas_client_timeout, wpa_s, NULL);
+	eloop_cancel_timeout(wpas_dpp_drv_wait_timeout, wpa_s, NULL);
+	eloop_cancel_timeout(wpas_dpp_tx_auth_resp_roc_timeout, wpa_s, NULL);
+	eloop_cancel_timeout(wpas_dpp_neg_freq_timeout, wpa_s, NULL);
 #ifdef CONFIG_DPP2
 	eloop_cancel_timeout(wpas_dpp_config_result_wait_timeout, wpa_s, NULL);
 	eloop_cancel_timeout(wpas_dpp_conn_status_result_wait_timeout,
@@ -4722,6 +4869,7 @@ void wpas_dpp_deinit(struct wpa_supplicant *wpa_s)
 	eloop_cancel_timeout(wpas_dpp_reconfig_reply_wait_timeout,
 			     wpa_s, NULL);
 	eloop_cancel_timeout(wpas_dpp_build_csr, wpa_s, NULL);
+	eloop_cancel_timeout(wpas_dpp_connected_timeout, wpa_s, NULL);
 	dpp_pfs_free(wpa_s->dpp_pfs);
 	wpa_s->dpp_pfs = NULL;
 	wpas_dpp_chirp_stop(wpa_s);
@@ -5524,6 +5672,7 @@ static int wpas_dpp_push_button_configurator(struct wpa_supplicant *wpa_s,
 	eloop_register_timeout(100, 0, wpas_dpp_push_button_expire,
 			       wpa_s, NULL);
 
+	wpa_msg(wpa_s, MSG_INFO, DPP_EVENT_PB_STATUS "started");
 	return 0;
 }
 
@@ -5585,6 +5734,7 @@ int wpas_dpp_push_button(struct wpa_supplicant *wpa_s, const char *cmd)
 	wpa_s->scan_req = MANUAL_SCAN_REQ;
 	wpa_s->scan_res_handler = wpas_dpp_pb_scan_res_handler;
 	wpa_supplicant_req_scan(wpa_s, 0, 0);
+	wpa_msg(wpa_s, MSG_INFO, DPP_EVENT_PB_STATUS "started");
 	return 0;
 }
 
@@ -5600,6 +5750,8 @@ void wpas_dpp_push_button_stop(struct wpa_supplicant *wpa_s)
 	if (wpa_s->dpp_pb_bi) {
 		char id[20];
 
+		if (wpa_s->dpp_pb_bi == wpa_s->dpp_pkex_bi)
+			wpa_s->dpp_pkex_bi = NULL;
 		os_snprintf(id, sizeof(id), "%u", wpa_s->dpp_pb_bi->id);
 		dpp_bootstrap_remove(wpa_s->dpp, id);
 		wpa_s->dpp_pb_bi = NULL;

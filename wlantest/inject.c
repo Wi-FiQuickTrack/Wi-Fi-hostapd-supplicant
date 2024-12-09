@@ -143,8 +143,8 @@ static int wlantest_inject_prot_bc(struct wlantest *wt,
 	else
 		crypt = ccmp_encrypt(incorrect_key ? stub :
 				     bss->gtk[bss->gtk_idx],
-				     frame, len, hdrlen, NULL, NULL, NULL, pn,
-				     bss->gtk_idx, &crypt_len);
+				     frame, len, hdrlen, NULL, NULL, NULL, NULL,
+				     pn, bss->gtk_idx, &crypt_len);
 
 	if (crypt == NULL)
 		return -1;
@@ -172,6 +172,9 @@ static int wlantest_inject_prot(struct wlantest *wt, struct wlantest_bss *bss,
 	int hdrlen;
 	struct wlantest_tdls *tdls = NULL;
 	const u8 *tk = NULL;
+#ifdef CONFIG_WFA
+	int count = 0;
+#endif
 
 	hdr = (struct ieee80211_hdr *) frame;
 	hdrlen = 24;
@@ -233,29 +236,37 @@ static int wlantest_inject_prot(struct wlantest *wt, struct wlantest_bss *bss,
 		}
 	}
 	if (tk) {
-		if (os_memcmp(hdr->addr2, tdls->init->addr, ETH_ALEN) == 0)
+		if (ether_addr_equal(hdr->addr2, tdls->init->addr))
 			pn = tdls->rsc_init[tid];
 		else
 			pn = tdls->rsc_resp[tid];
-	} else if (os_memcmp(hdr->addr2, bss->bssid, ETH_ALEN) == 0)
+	} else if (ether_addr_equal(hdr->addr2, bss->bssid))
 		pn = sta->rsc_fromds[tid];
 	else
 		pn = sta->rsc_tods[tid];
+
+#ifdef CONFIG_WFA
+	while(count < wt->increase_pn_num) {
+		inc_byte_array(pn, 6);
+		count++;
+	}
+#else
 	inc_byte_array(pn, 6);
+#endif
 
 	os_memset(stub, 0x11, sizeof(stub));
 	if (tk)
 		crypt = ccmp_encrypt(incorrect_key ? stub : tk,
-				     frame, len, hdrlen, qos, NULL, NULL, pn, 0,
-				     &crypt_len);
+				     frame, len, hdrlen, qos, NULL, NULL, NULL,
+				     pn, 0, &crypt_len);
 	else if (sta->pairwise_cipher == WPA_CIPHER_TKIP)
 		crypt = tkip_encrypt(incorrect_key ? stub : sta->ptk.tk,
 				     frame, len, hdrlen, qos, pn, 0,
 				     &crypt_len);
 	else
 		crypt = ccmp_encrypt(incorrect_key ? stub : sta->ptk.tk,
-				     frame, len, hdrlen, qos, NULL, NULL, pn, 0,
-				     &crypt_len);
+				     frame, len, hdrlen, qos, NULL, NULL, NULL,
+				     pn, 0, &crypt_len);
 
 	if (crypt == NULL) {
 		wpa_printf(MSG_DEBUG, "Frame encryption failed");

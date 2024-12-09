@@ -671,20 +671,27 @@ static void do_send_prop_changed_signal(
 					    &interface) ||
 	    /* Changed properties dict */
 	    !dbus_message_iter_open_container(&signal_iter, DBUS_TYPE_ARRAY,
-					      "{sv}", &dict_iter) ||
-	    !put_changed_properties(obj_dsc, interface, &dict_iter, 0) ||
-	    !dbus_message_iter_close_container(&signal_iter, &dict_iter) ||
+					      "{sv}", &dict_iter))
+		goto fail;
+	if (!put_changed_properties(obj_dsc, interface, &dict_iter, 0)) {
+		dbus_message_iter_close_container(&signal_iter, &dict_iter);
+		goto fail;
+	}
+	if (!dbus_message_iter_close_container(&signal_iter, &dict_iter) ||
 	    /* Invalidated properties array (empty) */
 	    !dbus_message_iter_open_container(&signal_iter, DBUS_TYPE_ARRAY,
 					      "s", &dict_iter) ||
-	    !dbus_message_iter_close_container(&signal_iter, &dict_iter)) {
-		wpa_printf(MSG_DEBUG, "dbus: %s: Failed to construct signal",
-			   __func__);
-	} else {
-		dbus_connection_send(con, msg, NULL);
-	}
+	    !dbus_message_iter_close_container(&signal_iter, &dict_iter))
+		goto fail;
 
+	dbus_connection_send(con, msg, NULL);
+
+out:
 	dbus_message_unref(msg);
+	return;
+fail:
+	wpa_printf(MSG_DEBUG, "dbus: %s: Failed to construct signal", __func__);
+	goto out;
 }
 
 
@@ -702,16 +709,23 @@ static void do_send_deprecated_prop_changed_signal(
 	dbus_message_iter_init_append(msg, &signal_iter);
 
 	if (!dbus_message_iter_open_container(&signal_iter, DBUS_TYPE_ARRAY,
-					      "{sv}", &dict_iter) ||
-	    !put_changed_properties(obj_dsc, interface, &dict_iter, 1) ||
-	    !dbus_message_iter_close_container(&signal_iter, &dict_iter)) {
-		wpa_printf(MSG_DEBUG, "dbus: %s: Failed to construct signal",
-			   __func__);
-	} else {
-		dbus_connection_send(con, msg, NULL);
+					      "{sv}", &dict_iter))
+		goto fail;
+	if (!put_changed_properties(obj_dsc, interface, &dict_iter, 1)) {
+		dbus_message_iter_close_container(&signal_iter, &dict_iter);
+		goto fail;
 	}
+	if (!dbus_message_iter_close_container(&signal_iter, &dict_iter))
+		goto fail;
 
+	dbus_connection_send(con, msg, NULL);
+
+out:
 	dbus_message_unref(msg);
+	return;
+fail:
+	wpa_printf(MSG_DEBUG, "dbus: %s: Failed to construct signal", __func__);
+	goto out;
 }
 
 
@@ -1026,6 +1040,23 @@ DBusMessage * wpas_dbus_reply_new_from_error(DBusMessage *message,
 }
 
 
+static double guard_interval_to_double(enum guard_interval value)
+{
+	switch (value) {
+	case GUARD_INTERVAL_0_4:
+		return 0.4;
+	case GUARD_INTERVAL_0_8:
+		return 0.8;
+	case GUARD_INTERVAL_1_6:
+		return 1.6;
+	case GUARD_INTERVAL_3_2:
+		return 3.2;
+	default:
+		return 0;
+	}
+}
+
+
 /**
  * wpas_dbus_new_from_signal_information - Adds a wpa_signal_info
  * to a DBusMessage.
@@ -1086,6 +1117,9 @@ int wpas_dbus_new_from_signal_information(DBusMessageIter *iter,
 	    (si->data.current_rx_rate &&
 	     !wpa_dbus_dict_append_uint32(&iter_dict, "linktxspeed",
 					  si->data.current_tx_rate)) ||
+	    (si->data.inactive_msec &&
+	     !wpa_dbus_dict_append_uint32(&iter_dict, "inactive-time",
+					 si->data.inactive_msec)) ||
 	    (si->data.tx_retry_failed &&
 	     !wpa_dbus_dict_append_uint32(&iter_dict, "retries-failed",
 					  si->data.tx_retry_failed)) ||
@@ -1146,6 +1180,20 @@ int wpas_dbus_new_from_signal_information(DBusMessageIter *iter,
 	    (si->data.avg_ack_signal &&
 	     !wpa_dbus_dict_append_int32(&iter_dict, "avg-ack-rssi",
 					 si->data.avg_ack_signal)) ||
+	    (si->data.rx_guard_interval &&
+	     !wpa_dbus_dict_append_double(
+		     &iter_dict, "rx-guard-interval",
+		     guard_interval_to_double(si->data.rx_guard_interval))) ||
+	    (si->data.tx_guard_interval &&
+	     !wpa_dbus_dict_append_double(
+		     &iter_dict, "tx-guard-interval",
+		     guard_interval_to_double(si->data.tx_guard_interval))) ||
+	    ((si->data.flags & STA_DRV_DATA_RX_HE_DCM) &&
+	     !wpa_dbus_dict_append_bool(&iter_dict, "rx-dcm",
+					si->data.rx_dcm)) ||
+	    ((si->data.flags & STA_DRV_DATA_TX_HE_DCM) &&
+	     !wpa_dbus_dict_append_bool(&iter_dict, "tx-dcm",
+					si->data.tx_dcm)) ||
 	    !wpa_dbus_dict_close_write(&variant_iter, &iter_dict) ||
 	    !dbus_message_iter_close_container(iter, &variant_iter))
 		return -ENOMEM;

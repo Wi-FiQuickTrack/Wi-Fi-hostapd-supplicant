@@ -60,6 +60,9 @@ static inline int wpa_drv_associate(struct wpa_supplicant *wpa_s,
 				    struct wpa_driver_associate_params *params)
 {
 	if (wpa_s->driver->associate) {
+		if (params)
+			params->freq.link_id = -1;
+
 		return wpa_s->driver->associate(wpa_s->drv_priv, params);
 	}
 	return -1;
@@ -125,7 +128,7 @@ static inline int wpa_drv_stop_sched_scan(struct wpa_supplicant *wpa_s)
 }
 
 struct wpa_scan_results *
-wpa_drv_get_scan_results2(struct wpa_supplicant *wpa_s);
+wpa_drv_get_scan_results(struct wpa_supplicant *wpa_s, const u8 *bssid);
 
 static inline int wpa_drv_get_bssid(struct wpa_supplicant *wpa_s, u8 *bssid)
 {
@@ -189,7 +192,7 @@ static inline int wpa_drv_get_seqnum(struct wpa_supplicant *wpa_s,
 {
 	if (wpa_s->driver->get_seqnum)
 		return wpa_s->driver->get_seqnum(wpa_s->ifname, wpa_s->drv_priv,
-						 addr, idx, seq);
+						 addr, idx, -1, seq);
 	return -1;
 }
 
@@ -199,7 +202,7 @@ static inline int wpa_drv_sta_deauth(struct wpa_supplicant *wpa_s,
 	if (wpa_s->driver->sta_deauth) {
 		return wpa_s->driver->sta_deauth(wpa_s->drv_priv,
 						 wpa_s->own_addr, addr,
-						 reason_code);
+						 reason_code, -1);
 	}
 	return -1;
 }
@@ -325,7 +328,7 @@ static inline int wpa_drv_send_mlme(struct wpa_supplicant *wpa_s,
 	if (wpa_s->driver->send_mlme)
 		return wpa_s->driver->send_mlme(wpa_s->drv_priv,
 						data, data_len, noack,
-						freq, NULL, 0, 0, wait);
+						freq, NULL, 0, 0, wait, -1);
 	return -1;
 }
 
@@ -339,19 +342,15 @@ static inline int wpa_drv_update_ft_ies(struct wpa_supplicant *wpa_s,
 	return -1;
 }
 
-static inline int wpa_drv_set_ap(struct wpa_supplicant *wpa_s,
-				 struct wpa_driver_ap_params *params)
-{
-	if (wpa_s->driver->set_ap)
-		return wpa_s->driver->set_ap(wpa_s->drv_priv, params);
-	return -1;
-}
-
 static inline int wpa_drv_sta_add(struct wpa_supplicant *wpa_s,
 				  struct hostapd_sta_add_params *params)
 {
-	if (wpa_s->driver->sta_add)
+	if (wpa_s->driver->sta_add) {
+		/* Set link_id to -1 for non-TDLS peers */
+		if (!(params->flags & WPA_STA_TDLS_PEER))
+			params->mld_link_id = -1;
 		return wpa_s->driver->sta_add(wpa_s->drv_priv, params);
+	}
 	return -1;
 }
 
@@ -371,7 +370,7 @@ static inline int wpa_drv_tx_control_port(struct wpa_supplicant *wpa_s,
 	if (!wpa_s->driver->tx_control_port)
 		return -1;
 	return wpa_s->driver->tx_control_port(wpa_s->drv_priv, dest, proto,
-					      buf, len, no_encrypt);
+					      buf, len, no_encrypt, -1);
 }
 
 static inline int wpa_drv_hapd_send_eapol(struct wpa_supplicant *wpa_s,
@@ -382,7 +381,7 @@ static inline int wpa_drv_hapd_send_eapol(struct wpa_supplicant *wpa_s,
 	if (wpa_s->driver->hapd_send_eapol)
 		return wpa_s->driver->hapd_send_eapol(wpa_s->drv_priv, addr,
 						      data, data_len, encrypt,
-						      own_addr, flags);
+						      own_addr, flags, -1);
 	return -1;
 }
 
@@ -579,13 +578,14 @@ static inline int wpa_drv_send_tdls_mgmt(struct wpa_supplicant *wpa_s,
 					 const u8 *dst, u8 action_code,
 					 u8 dialog_token, u16 status_code,
 					 u32 peer_capab, int initiator,
-					 const u8 *buf, size_t len)
+					 const u8 *buf, size_t len, int link_id)
 {
 	if (wpa_s->driver->send_tdls_mgmt) {
 		return wpa_s->driver->send_tdls_mgmt(wpa_s->drv_priv, dst,
 						     action_code, dialog_token,
 						     status_code, peer_capab,
-						     initiator, buf, len);
+						     initiator, buf, len,
+						     link_id);
 	}
 	return -1;
 }
@@ -801,6 +801,14 @@ static inline int wpa_drv_set_replay_protect(struct wpa_supplicant *wpa_s,
 		return -1;
 	return wpa_s->driver->set_replay_protect(wpa_s->drv_priv, enabled,
 						 window);
+}
+
+static inline int wpa_drv_set_offload(struct wpa_supplicant *wpa_s, u8 offload)
+{
+	if (!wpa_s->driver->set_offload)
+		return -1;
+	return wpa_s->driver->set_offload(wpa_s->drv_priv, offload);
+
 }
 
 static inline int wpa_drv_set_current_cipher_suite(struct wpa_supplicant *wpa_s,
@@ -1087,6 +1095,10 @@ static inline int wpa_drv_update_connect_params(
 {
 	if (!wpa_s->driver->update_connect_params)
 		return -1;
+
+	if (params)
+		params->freq.link_id = -1;
+
 	return wpa_s->driver->update_connect_params(wpa_s->drv_priv, params,
 						    mask);
 }
@@ -1135,8 +1147,10 @@ static inline int wpa_drv_set_secure_ranging_ctx(struct wpa_supplicant *wpa_s,
 {
 	struct secure_ranging_params params;
 
+	/* Configure secure ranging context only to the drivers that support it.
+	 */
 	if (!wpa_s->driver->set_secure_ranging_ctx)
-		return -1;
+		return 0;
 
 	os_memset(&params, 0, sizeof(params));
 	params.action = action;

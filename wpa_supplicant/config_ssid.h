@@ -584,6 +584,8 @@ struct wpa_ssid {
 
 	int he;
 
+	int eht;
+
 	enum oper_chan_width max_oper_chwidth;
 
 	unsigned int vht_center_freq1;
@@ -927,6 +929,18 @@ struct wpa_ssid {
 	u32 macsec_replay_window;
 
 	/**
+	 * macsec_offload - Enable MACsec hardware offload
+	 *
+	 * This setting applies only when MACsec is in use, i.e.,
+	 *  - the key server has decided to enable MACsec
+	 *
+	 * 0 = MACSEC_OFFLOAD_OFF (default)
+	 * 1 = MACSEC_OFFLOAD_PHY
+	 * 2 = MACSEC_OFFLOAD_MAC
+	 */
+	int macsec_offload;
+
+	/**
 	 * macsec_port - MACsec port (in SCI)
 	 *
 	 * Port component of the SCI.
@@ -1174,6 +1188,11 @@ struct wpa_ssid {
 	int ft_eap_pmksa_caching;
 
 	/**
+	 * multi_ap_profile - Supported Multi-AP profile
+	 */
+	int multi_ap_profile;
+
+	/**
 	 * beacon_prot - Whether Beacon protection is enabled
 	 *
 	 * This depends on management frame protection (ieee80211w) being
@@ -1240,6 +1259,30 @@ struct wpa_ssid {
 	 * to 1 to have it disabled.
 	 */
 	int disable_eht;
+
+	/**
+	 * enable_4addr_mode - Set 4addr mode after association
+	 * 0 = Do not attempt to set 4addr mode
+	 * 1 = Try to set 4addr mode after association
+	 *
+	 * Linux requires that an interface is set to 4addr mode before it can
+	 * be added to a bridge. Set this to 1 for networks where you intent
+	 * to use the interface in a bridge.
+	 */
+	int enable_4addr_mode;
+
+	/**
+	 * max_idle - BSS max idle period to request
+	 *
+	 * If nonzero, request the specified number of 1000 TU (i.e., 1.024 s)
+	 * as the maximum idle period for the STA during association.
+	 */
+	int max_idle;
+
+	/**
+	 * ssid_protection - Whether to use SSID protection in 4-way handshake
+	 */
+	bool ssid_protection;
 };
 
 #endif /* CONFIG_SSID_H */

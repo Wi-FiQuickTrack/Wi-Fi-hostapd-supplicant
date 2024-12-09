@@ -110,7 +110,29 @@ static int eap_aka_check_identity_reauth(struct eap_sm *sm,
 		return 0;
 	}
 
-	wpa_printf(MSG_DEBUG, "EAP-AKA: Using fast re-authentication");
+	if (data->reauth->counter > sm->cfg->eap_sim_aka_fast_reauth_limit) {
+		wpa_printf(MSG_DEBUG,
+			   "EAP-AKA: Too many fast re-authentication attemps - fall back to full authentication");
+		if (sm->cfg->eap_sim_id & 0x04) {
+			wpa_printf(MSG_DEBUG,
+				   "EAP-AKA: Permanent identity recognized - skip AKA-Identity exchange");
+			os_strlcpy(data->permanent, data->reauth->permanent,
+				   sizeof(data->permanent));
+			os_strlcpy(sm->sim_aka_permanent,
+				   data->reauth->permanent,
+				   sizeof(sm->sim_aka_permanent));
+			eap_sim_db_remove_reauth(sm->cfg->eap_sim_db_priv,
+						 data->reauth);
+			data->reauth = NULL;
+			eap_aka_fullauth(sm, data);
+			return 1;
+		}
+		return 0;
+	}
+
+	wpa_printf(MSG_DEBUG,
+		   "EAP-AKA: Using fast re-authentication (counter=%d)",
+		   data->reauth->counter);
 	os_strlcpy(data->permanent, data->reauth->permanent,
 		   sizeof(data->permanent));
 	data->counter = data->reauth->counter;
@@ -134,10 +156,17 @@ static void eap_aka_check_identity(struct eap_sm *sm,
 				   struct eap_aka_data *data)
 {
 	char *username;
+	const u8 *identity = sm->identity;
+	size_t identity_len = sm->identity_len;
+
+	if (sm->sim_aka_permanent[0]) {
+		identity = (const u8 *) sm->sim_aka_permanent;
+		identity_len = os_strlen(sm->sim_aka_permanent);
+	}
 
 	/* Check if we already know the identity from EAP-Response/Identity */
 
-	username = sim_get_username(sm->identity, sm->identity_len);
+	username = sim_get_username(identity, identity_len);
 	if (username == NULL)
 		return;
 
@@ -147,6 +176,16 @@ static void eap_aka_check_identity(struct eap_sm *sm,
 		 * Since re-auth username was recognized, skip AKA/Identity
 		 * exchange.
 		 */
+		return;
+	}
+
+	if (sm->sim_aka_permanent[0] && data->state == IDENTITY) {
+		/* Skip AKA/Identity exchange since the permanent identity
+		 * was recognized. */
+		os_free(username);
+		os_strlcpy(data->permanent, sm->sim_aka_permanent,
+			   sizeof(data->permanent));
+		eap_aka_fullauth(sm, data);
 		return;
 	}
 

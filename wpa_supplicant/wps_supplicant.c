@@ -295,8 +295,7 @@ static void wpas_wps_remove_dup_network(struct wpa_supplicant *wpa_s,
 		if (ssid->bssid_set || new_ssid->bssid_set) {
 			if (ssid->bssid_set != new_ssid->bssid_set)
 				continue;
-			if (os_memcmp(ssid->bssid, new_ssid->bssid, ETH_ALEN) !=
-			    0)
+			if (!ether_addr_equal(ssid->bssid, new_ssid->bssid))
 				continue;
 		}
 
@@ -1033,6 +1032,7 @@ static void wpas_wps_timeout(void *eloop_ctx, void *timeout_ctx)
 	 */
 	wpas_notify_wps_event_fail(wpa_s, &data.fail);
 	wpa_s->supp_pbc_active = false;
+	wpa_s->wps_overlap = false;
 	wpas_clear_wps(wpa_s);
 }
 
@@ -1080,7 +1080,7 @@ static struct wpa_ssid * wpas_wps_add_network(struct wpa_supplicant *wpa_s,
 		 */
 #ifndef CONFIG_P2P
 		dl_list_for_each(bss, &wpa_s->bss, struct wpa_bss, list) {
-			if (os_memcmp(bssid, bss->bssid, ETH_ALEN) != 0)
+			if (!ether_addr_equal(bssid, bss->bssid))
 				continue;
 
 			os_free(ssid->ssid);
@@ -1227,14 +1227,19 @@ int wpas_wps_start_pbc(struct wpa_supplicant *wpa_s, const u8 *bssid,
 		}
 	}
 #endif /* CONFIG_P2P */
-	os_snprintf(phase1, sizeof(phase1), "pbc=1%s",
-		    multi_ap_backhaul_sta ? " multi_ap=1" : "");
+	if (multi_ap_backhaul_sta)
+		os_snprintf(phase1, sizeof(phase1), "pbc=1 multi_ap=%d",
+			    multi_ap_backhaul_sta);
+	else
+		os_snprintf(phase1, sizeof(phase1), "pbc=1");
 	if (wpa_config_set_quoted(ssid, "phase1", phase1) < 0)
 		return -1;
 	if (wpa_s->wps_fragment_size)
 		ssid->eap.fragment_size = wpa_s->wps_fragment_size;
-	if (multi_ap_backhaul_sta)
+	if (multi_ap_backhaul_sta) {
 		ssid->multi_ap_backhaul_sta = 1;
+		ssid->multi_ap_profile = multi_ap_backhaul_sta;
+	}
 	wpa_s->supp_pbc_active = true;
 	wpa_s->wps_overlap = false;
 	wpa_supplicant_wps_event(wpa_s, WPS_EV_PBC_ACTIVE, NULL);
@@ -1405,6 +1410,7 @@ int wpas_wps_cancel(struct wpa_supplicant *wpa_s)
 	}
 
 	wpa_s->supp_pbc_active = false;
+	wpa_s->wps_overlap = false;
 	wpa_msg(wpa_s, MSG_INFO, WPS_EVENT_CANCEL);
 	wpa_s->after_wps = 0;
 
@@ -1872,7 +1878,7 @@ int wpas_wps_ssid_wildcard_ok(struct wpa_supplicant *wpa_s,
 	}
 
 	if (!ret && ssid->bssid_set &&
-	    os_memcmp(ssid->bssid, bss->bssid, ETH_ALEN) == 0) {
+	    ether_addr_equal(ssid->bssid, bss->bssid)) {
 		/* allow wildcard SSID due to hardcoded BSSID match */
 		ret = 1;
 	}
@@ -1911,11 +1917,11 @@ static bool wpas_wps_is_pbc_overlap(struct wps_ap_info *ap,
 				    const u8 *sel_uuid)
 {
 	if (!ap->pbc_active ||
-	    os_memcmp(selected->bssid, ap->bssid, ETH_ALEN) == 0)
+	    ether_addr_equal(selected->bssid, ap->bssid))
 		return false;
 
 	if (!is_zero_ether_addr(ssid->bssid) &&
-	    os_memcmp(ap->bssid, ssid->bssid, ETH_ALEN) != 0) {
+	    !ether_addr_equal(ap->bssid, ssid->bssid)) {
 		wpa_printf(MSG_DEBUG, "WPS: Ignore another BSS " MACSTR
 			   " in active PBC mode due to local BSSID limitation",
 			   MAC2STR(ap->bssid));
@@ -3003,7 +3009,7 @@ static struct wps_ap_info * wpas_wps_get_ap_info(struct wpa_supplicant *wpa_s,
 
 	for (i = 0; i < wpa_s->num_wps_ap; i++) {
 		struct wps_ap_info *ap = &wpa_s->wps_ap[i];
-		if (os_memcmp(ap->bssid, bssid, ETH_ALEN) == 0)
+		if (ether_addr_equal(ap->bssid, bssid))
 			return ap;
 	}
 

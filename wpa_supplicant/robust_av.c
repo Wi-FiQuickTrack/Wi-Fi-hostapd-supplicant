@@ -97,12 +97,27 @@ static int wpas_populate_type10_classifier(struct type10_params *type10_param,
 }
 
 
+static bool tclas_elem_required(const struct qos_characteristics *qos_elem)
+{
+	if (!qos_elem || !qos_elem->available)
+		return true;
+
+	if (qos_elem->direction == SCS_DIRECTION_DOWN)
+		return true;
+
+	return false;
+}
+
+
 static int wpas_populate_scs_descriptor_ie(struct scs_desc_elem *desc_elem,
-					   struct wpabuf *buf)
+					   struct wpabuf *buf,
+					   bool allow_scs_traffic_desc)
 {
 	u8 *len, *len1;
 	struct tclas_element *tclas_elem;
 	unsigned int i;
+	struct qos_characteristics *qos_elem;
+	u32 control_info = 0;
 
 	/* SCS Descriptor element */
 	wpabuf_put_u8(buf, WLAN_EID_SCS_DESCRIPTOR);
@@ -111,6 +126,9 @@ static int wpas_populate_scs_descriptor_ie(struct scs_desc_elem *desc_elem,
 	wpabuf_put_u8(buf, desc_elem->request_type);
 	if (desc_elem->request_type == SCS_REQ_REMOVE)
 		goto end;
+
+	if (!tclas_elem_required(&desc_elem->qos_char_elem))
+		goto skip_tclas_elem;
 
 	if (desc_elem->intra_access_priority || desc_elem->scs_up_avail) {
 		wpabuf_put_u8(buf, WLAN_EID_INTRA_ACCESS_CATEGORY_PRIORITY);
@@ -162,6 +180,81 @@ static int wpas_populate_scs_descriptor_ie(struct scs_desc_elem *desc_elem,
 		wpabuf_put_u8(buf, WLAN_EID_TCLAS_PROCESSING);
 		wpabuf_put_u8(buf, 1);
 		wpabuf_put_u8(buf, desc_elem->tclas_processing);
+	}
+
+skip_tclas_elem:
+	if (allow_scs_traffic_desc && desc_elem->qos_char_elem.available) {
+		qos_elem = &desc_elem->qos_char_elem;
+		/* Element ID, Length, and Element ID Extension */
+		wpabuf_put_u8(buf, WLAN_EID_EXTENSION);
+		len1 = wpabuf_put(buf, 1);
+		wpabuf_put_u8(buf, WLAN_EID_EXT_QOS_CHARACTERISTICS);
+
+		/* Remove invalid mask bits */
+
+		/* Medium Time is applicable only for direct link */
+		if ((qos_elem->mask & SCS_QOS_BIT_MEDIUM_TIME) &&
+		    qos_elem->direction != SCS_DIRECTION_DIRECT)
+			qos_elem->mask &= ~SCS_QOS_BIT_MEDIUM_TIME;
+
+		/* Service Start Time LinkID is valid only when Service Start
+		 * Time is present.
+		 */
+		if ((qos_elem->mask & SCS_QOS_BIT_SERVICE_START_TIME_LINKID) &&
+		    !(qos_elem->mask & SCS_QOS_BIT_SERVICE_START_TIME))
+			qos_elem->mask &=
+				~SCS_QOS_BIT_SERVICE_START_TIME_LINKID;
+
+		/* IEEE P802.11be/D4.0, 9.4.2.316 QoS Characteristics element,
+		 * Figure 9-1001av (Control Info field format)
+		 */
+		control_info = ((u32) qos_elem->direction <<
+				EHT_QOS_CONTROL_INFO_DIRECTION_OFFSET);
+		control_info |= ((u32) desc_elem->intra_access_priority <<
+				 EHT_QOS_CONTROL_INFO_TID_OFFSET);
+		control_info |= ((u32) desc_elem->intra_access_priority <<
+				 EHT_QOS_CONTROL_INFO_USER_PRIORITY_OFFSET);
+		control_info |= ((u32) qos_elem->mask <<
+				 EHT_QOS_CONTROL_INFO_PRESENCE_MASK_OFFSET);
+
+		/* Control Info */
+		wpabuf_put_le32(buf, control_info);
+		/* Minimum Service Interval */
+		wpabuf_put_le32(buf, qos_elem->min_si);
+		/* Maximum Service Interval */
+		wpabuf_put_le32(buf, qos_elem->max_si);
+		/* Minimum Data Rate */
+		wpabuf_put_le24(buf, qos_elem->min_data_rate);
+		/* Delay Bound */
+		wpabuf_put_le24(buf, qos_elem->delay_bound);
+
+		/* Maximum MSDU Size */
+		if (qos_elem->mask & SCS_QOS_BIT_MAX_MSDU_SIZE)
+			wpabuf_put_le16(buf, qos_elem->max_msdu_size);
+		/* Start Service Time */
+		if (qos_elem->mask & SCS_QOS_BIT_SERVICE_START_TIME)
+			wpabuf_put_le32(buf, qos_elem->service_start_time);
+		/* Service Start Time LinkID */
+		if (qos_elem->mask & SCS_QOS_BIT_SERVICE_START_TIME_LINKID)
+			wpabuf_put_u8(buf,
+				      qos_elem->service_start_time_link_id);
+		/* Mean Data Rate */
+		if (qos_elem->mask & SCS_QOS_BIT_MEAN_DATA_RATE)
+			wpabuf_put_le24(buf, qos_elem->mean_data_rate);
+		/* Delayed Bounded Burst Size */
+		if (qos_elem->mask & SCS_QOS_BIT_DELAYED_BOUNDED_BURST_SIZE)
+			wpabuf_put_le32(buf, qos_elem->burst_size);
+		/* MSDU Lifetime */
+		if (qos_elem->mask & SCS_QOS_BIT_MSDU_LIFETIME)
+			wpabuf_put_le16(buf, qos_elem->msdu_lifetime);
+		/* MSDU Delivery Info */
+		if (qos_elem->mask & SCS_QOS_BIT_MSDU_DELIVERY_INFO)
+			wpabuf_put_u8(buf, qos_elem->msdu_delivery_info);
+		/* Medium Time */
+		if (qos_elem->mask & SCS_QOS_BIT_MEDIUM_TIME)
+			wpabuf_put_le16(buf, qos_elem->medium_time);
+
+		*len1 = (u8 *) wpabuf_put(buf, 0) - len1 - 1;
 	}
 
 end:
@@ -273,8 +366,51 @@ static size_t tclas_elem_len(const struct tclas_element *elem)
 }
 
 
+static size_t qos_char_len(const struct qos_characteristics *qos_elem)
+{
+	size_t buf_len = 0;
+
+	buf_len += 1 +	/* Element ID */
+		1 +	/* Length */
+		1 +	/* Element ID Extension */
+		4 +	/* Control Info */
+		4 +	/* Minimum Service Interval */
+		4 +	/* Maximum Service Interval */
+		3 +	/* Minimum Data Rate */
+		3;	/* Delay Bound */
+
+	if (qos_elem->mask & SCS_QOS_BIT_MAX_MSDU_SIZE)
+		buf_len += 2;	 /* Maximum MSDU Size */
+
+	if (qos_elem->mask & SCS_QOS_BIT_SERVICE_START_TIME) {
+		buf_len += 4;	 /* Service Start Time */
+		if (qos_elem->mask & SCS_QOS_BIT_SERVICE_START_TIME_LINKID)
+			buf_len++;	/* Service Start Time LinkID */
+	}
+
+	if (qos_elem->mask & SCS_QOS_BIT_MEAN_DATA_RATE)
+		buf_len += 3;	 /* Mean Data Rate */
+
+	if (qos_elem->mask & SCS_QOS_BIT_DELAYED_BOUNDED_BURST_SIZE)
+		buf_len += 4;	 /* Delayed Bounded Burst Size */
+
+	if (qos_elem->mask & SCS_QOS_BIT_MSDU_LIFETIME)
+		buf_len += 2;	 /* MSDU Lifetime */
+
+	if (qos_elem->mask & SCS_QOS_BIT_MSDU_DELIVERY_INFO)
+		buf_len++;	 /* MSDU Delivery Info */
+
+	if (qos_elem->mask & SCS_QOS_BIT_MEDIUM_TIME &&
+	    qos_elem->direction == SCS_DIRECTION_DIRECT)
+		buf_len += 2;	 /* Medium Time */
+
+	return buf_len;
+}
+
+
 static struct wpabuf * allocate_scs_buf(struct scs_desc_elem *desc_elem,
-					unsigned int num_scs_desc)
+					unsigned int num_scs_desc,
+					bool allow_scs_traffic_desc)
 {
 	struct wpabuf *buf;
 	size_t buf_len = 0;
@@ -290,6 +426,13 @@ static struct wpabuf * allocate_scs_buf(struct scs_desc_elem *desc_elem,
 			   1 ;	/* Request type */
 
 		if (desc_elem->request_type == SCS_REQ_REMOVE)
+			continue;
+
+		if (allow_scs_traffic_desc &&
+		    desc_elem->qos_char_elem.available)
+			buf_len += qos_char_len(&desc_elem->qos_char_elem);
+
+		if (!tclas_elem_required(&desc_elem->qos_char_elem))
 			continue;
 
 		if (desc_elem->intra_access_priority || desc_elem->scs_up_avail)
@@ -369,8 +512,11 @@ int wpas_send_scs_req(struct wpa_supplicant *wpa_s)
 {
 	struct wpabuf *buf = NULL;
 	struct scs_desc_elem *desc_elem = NULL;
+	const struct ieee80211_eht_capabilities *eht;
+	const u8 *eht_ie;
 	int ret = -1;
 	unsigned int i;
+	bool allow_scs_traffic_desc = false;
 
 	if (wpa_s->wpa_state != WPA_COMPLETED || !wpa_s->current_ssid)
 		return -1;
@@ -385,8 +531,28 @@ int wpas_send_scs_req(struct wpa_supplicant *wpa_s)
 	if (!desc_elem)
 		return -1;
 
+	if (wpa_is_non_eht_scs_traffic_desc_supported(wpa_s->current_bss))
+		allow_scs_traffic_desc = true;
+
+	/* Allow SCS Traffic descriptor support for EHT connection */
+	eht_ie = wpa_bss_get_ie_ext(wpa_s->current_bss,
+				    WLAN_EID_EXT_EHT_CAPABILITIES);
+	if (wpa_s->connection_eht && eht_ie &&
+	    eht_ie[1] >= 1 + IEEE80211_EHT_CAPAB_MIN_LEN) {
+		eht = (const struct ieee80211_eht_capabilities *) &eht_ie[3];
+		if (eht->mac_cap & EHT_MACCAP_SCS_TRAFFIC_DESC)
+			allow_scs_traffic_desc = true;
+	}
+
+	if (!allow_scs_traffic_desc && desc_elem->qos_char_elem.available) {
+		wpa_dbg(wpa_s, MSG_INFO,
+			"Connection does not support EHT/non-EHT SCS Traffic Description - could not send SCS Request with QoS Characteristics");
+		return -1;
+	}
+
 	buf = allocate_scs_buf(desc_elem,
-			       wpa_s->scs_robust_av_req.num_scs_desc);
+			       wpa_s->scs_robust_av_req.num_scs_desc,
+			       allow_scs_traffic_desc);
 	if (!buf)
 		return -1;
 
@@ -400,7 +566,8 @@ int wpas_send_scs_req(struct wpa_supplicant *wpa_s)
 	for (i = 0; i < wpa_s->scs_robust_av_req.num_scs_desc;
 	     i++, desc_elem++) {
 		/* SCS Descriptor element */
-		if (wpas_populate_scs_descriptor_ie(desc_elem, buf) < 0)
+		if (wpas_populate_scs_descriptor_ie(desc_elem, buf,
+						    allow_scs_traffic_desc) < 0)
 			goto end;
 	}
 
@@ -497,17 +664,91 @@ void free_up_scs_desc(struct scs_robust_av_data *data)
 }
 
 
+/* Element ID Extension(1) + Request Type(1) + User Priority Control(2) +
+ * Stream Timeout(4) */
+#define MSCS_DESCRIPTOR_FIXED_LEN 8
+
+static void wpas_parse_mscs_resp(struct wpa_supplicant *wpa_s,
+				 u16 status, const u8 *bssid,
+				 const u8 *mscs_desc_ie)
+{
+	struct robust_av_data robust_av;
+	const u8 *pos;
+
+	/* The MSCS Descriptor element is optional in the MSCS Response frame */
+	if (!mscs_desc_ie)
+		goto event_mscs_result;
+
+	if (mscs_desc_ie[1] < MSCS_DESCRIPTOR_FIXED_LEN) {
+		wpa_printf(MSG_INFO,
+			   "MSCS: Drop received frame: invalid MSCS Descriptor element length: %d",
+			   mscs_desc_ie[1]);
+		return;
+	}
+
+	os_memset(&robust_av, 0, sizeof(struct robust_av_data));
+
+	/* Skip Element ID, Length, and Element ID Extension */
+	pos = &mscs_desc_ie[3];
+
+	robust_av.request_type = *pos++;
+
+	switch (robust_av.request_type) {
+	case SCS_REQ_CHANGE:
+		/*
+		 * Inform the suggested set of parameters that could be accepted
+		 * by the AP in response to a subsequent request by the station.
+		 */
+		robust_av.up_bitmap = *pos++;
+		robust_av.up_limit = *pos++ & 0x07;
+		robust_av.stream_timeout = WPA_GET_LE32(pos);
+		wpa_msg(wpa_s, MSG_INFO, WPA_EVENT_MSCS_RESULT "bssid=" MACSTR
+			" status_code=%u change up_bitmap=%u up_limit=%u stream_timeout=%u",
+			MAC2STR(bssid), status, robust_av.up_bitmap,
+			robust_av.up_limit, robust_av.stream_timeout);
+		wpa_s->mscs_setup_done = false;
+		return;
+	case SCS_REQ_ADD:
+		/*
+		 * This type is used in (Re)Association Response frame MSCS
+		 * Descriptor element if no change is required.
+		 */
+		break;
+	default:
+		wpa_printf(MSG_INFO,
+			   "MSCS: Drop received frame with unknown Request Type: %u",
+			   robust_av.request_type);
+		return;
+	}
+
+event_mscs_result:
+	wpa_msg(wpa_s, MSG_INFO, WPA_EVENT_MSCS_RESULT "bssid=" MACSTR
+		" status_code=%u", MAC2STR(bssid), status);
+	wpa_s->mscs_setup_done = status == WLAN_STATUS_SUCCESS;
+}
+
+
 void wpas_handle_robust_av_recv_action(struct wpa_supplicant *wpa_s,
 				       const u8 *src, const u8 *buf, size_t len)
 {
 	u8 dialog_token;
 	u16 status_code;
+	const u8 *mscs_desc_ie;
 
 	if (len < 3)
 		return;
 
 	dialog_token = *buf++;
-	if (dialog_token != wpa_s->robust_av.dialog_token) {
+	len--;
+
+	/* AP sets dialog token to 0 for unsolicited response */
+	if (!dialog_token && !wpa_s->mscs_setup_done) {
+		wpa_printf(MSG_INFO,
+			   "MSCS: Drop unsolicited received frame: inactive");
+		return;
+	}
+
+	if (dialog_token && dialog_token != wpa_s->robust_av.dialog_token) {
 		wpa_printf(MSG_INFO,
 			   "MSCS: Drop received frame due to dialog token mismatch: received:%u expected:%u",
 			   dialog_token, wpa_s->robust_av.dialog_token);
@@ -515,9 +756,11 @@ void wpas_handle_robust_av_recv_action(struct wpa_supplicant *wpa_s,
 	}
 
 	status_code = WPA_GET_LE16(buf);
-	wpa_msg(wpa_s, MSG_INFO, WPA_EVENT_MSCS_RESULT "bssid=" MACSTR
-		" status_code=%u", MAC2STR(src), status_code);
-	wpa_s->mscs_setup_done = status_code == WLAN_STATUS_SUCCESS;
+	buf += 2;
+	len -= 2;
+
+	mscs_desc_ie = get_ie_ext(buf, len, WLAN_EID_EXT_MSCS_DESCRIPTOR);
+	wpas_parse_mscs_resp(wpa_s, status_code, src, mscs_desc_ie);
 }
 
 
@@ -533,21 +776,19 @@ void wpas_handle_assoc_resp_mscs(struct wpa_supplicant *wpa_s, const u8 *bssid,
 		return;
 
 	mscs_desc_ie = get_ie_ext(ies, ies_len, WLAN_EID_EXT_MSCS_DESCRIPTOR);
-	if (!mscs_desc_ie || mscs_desc_ie[1] <= 8)
+	if (!mscs_desc_ie || mscs_desc_ie[1] <= MSCS_DESCRIPTOR_FIXED_LEN)
 		return;
 
-	/* Subelements start after (ie_id(1) + ie_len(1) + ext_id(1) +
-	 * request type(1) + upc(2) + stream timeout(4) =) 10.
-	 */
-	mscs_status = get_ie(&mscs_desc_ie[10], mscs_desc_ie[1] - 8,
+	/* Subelements start after element header and fixed fields */
+	mscs_status = get_ie(&mscs_desc_ie[2 + MSCS_DESCRIPTOR_FIXED_LEN],
+			     mscs_desc_ie[1] - MSCS_DESCRIPTOR_FIXED_LEN,
 			     MCSC_SUBELEM_STATUS);
 	if (!mscs_status || mscs_status[1] < 2)
 		return;
 
 	status = WPA_GET_LE16(mscs_status + 2);
-	wpa_msg(wpa_s, MSG_INFO, WPA_EVENT_MSCS_RESULT "bssid=" MACSTR
-		" status_code=%u", MAC2STR(bssid), status);
-	wpa_s->mscs_setup_done = status == WLAN_STATUS_SUCCESS;
+
+	wpas_parse_mscs_resp(wpa_s, status, bssid, mscs_desc_ie);
 }
 
 

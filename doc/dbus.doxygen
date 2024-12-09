@@ -209,9 +209,11 @@ fi.w1.wpa_supplicant1.CreateInterface.
 	      <tr><th>Key</th><th>Value type</th><th>Description</th><th>Required</th>
 	      <tr><td>Type</td><td>s</td><td>Type of the scan. Possible values: "active", "passive"</td><td>Yes</td>
 	      <tr><td>SSIDs</td><td>aay</td><td>Array of SSIDs to scan for (applies only if scan type is active)</td><td>No</td>
-	      <tr><td>IEs</td><td>aay</td><td>Information elements to used in active scan (applies only if scan type is active)</td><td>No</td>
+	      <tr><td>IEs</td><td>aay</td><td>Information elements to used in active scan (applies only if scan type is active). Default IEs will be used in absence of this option.</td><td>No</td>
 	      <tr><td>Channels</td><td>a(uu)</td><td>Array of frequencies to scan in form of (center, width) in MHz.</td><td>No</td>
 	      <tr><td>AllowRoam</td><td>b</td><td>TRUE (or absent) to allow a roaming decision based on the results of this scan, FALSE to prevent a roaming decision.</td><td>No</td>
+	      <tr><td>NonColoc6GHz</td><td>b</td><td>TRUE to force scanning of non-PSC 6 GHz channels, FALSE (or absent) to skip scanning of non-PSC 6 GHz channels.</td><td>No</td>
+	      <tr><td>6GHzOnly</td><td>b</td><td>TRUE to scan only 6 GHz channels, FALSE (or absent) to scan all channels. Applies only if Channels is absent.</td><td>No</td>
 	    </table>
 	  </dd>
 	</dl>
@@ -580,6 +582,24 @@ fi.w1.wpa_supplicant1.CreateInterface.
       <li>
 	<h3>InterworkingSelect ( ) --> nothing</h3>
 	<p>Perform Interworking (Hotspot 2.0) network selection.</p>
+      </li>
+      <li>
+	<h3>ANQPGet ( a{sv} : args) --> nothing</h3>
+	<p>Send an ANQP request.</p>
+	<h4>Arguments</h4>
+	<dl>
+	  <dt>a{sv} : args</dt>
+	  <dd>
+	    <table>
+	      <tr><th>Key</th><th>Value type</th><th>Description</th><th>Required</th>
+	      <tr><td>addr</td><td>s</td><td>Address of the BSS</td><td>Yes</td>
+	      <tr><td>freq</td><td>u</td><td>Frequency of the BSS</td><td>No</td>
+	      <tr><td>ids</td><td>aq</td><td>List of ANQP information IDs to query</td><td>No</td>
+	      <tr><td>hs20_ids</td><td>ay</td><td>List of Hotspot 2.0 ANQP information IDs to query</td><td>No</td>
+	      <tr><td>mbo_ids</td><td>ay</td><td>List of MBO ANQP information IDs to query</td><td>No</td>
+	    </table>
+	  </dd>
+	</dl>
       </li>
       <li>
 	<h3>EAPLogoff ( ) --> nothing</h3>
@@ -1127,6 +1147,12 @@ fi.w1.wpa_supplicant1.CreateInterface.
       <li>
 	<h3>MACAddress - ay - (read)</h3>
 	<p>MAC address of the interface</p>
+      </li>
+
+      <li>
+	<h3>SignalChange - "a{sv}" - (read)</h3>
+	<p>Signal and quality properties of the interface</p>
+      </li>
     </ul>
 
 \subsection dbus_interface_signals Signals
@@ -1328,6 +1354,31 @@ fi.w1.wpa_supplicant1.CreateInterface.
 
       <li>
 	<h3>InterworkingSelectDone ( )</h3>
+      </li>
+
+      <li>
+	<h3>PskMismatch ( )</h3>
+	<p>A possible PSK mismatch is identified.</p>
+      </li>
+
+      <li>
+	<h3>HS20TermsAndConditions ( s : url )</h3>
+	<p>A terms and conditions page is present. This signal is delivered when the network requires acceptance of the terms and conditions.</p>
+	<dl>
+	  <dt>s : url</dt>
+	  <dd>URL of the terms and conditions page.</dd>
+	</dl>
+      </li>
+
+      <li>
+	<h3>ANQPQueryDone ( s : addr, s : result )</h3>
+	<p>Result of an ANQP query.</p>
+	<dl>
+	  <dt>s : addr</dt>
+	  <dd>Address of the BSS targeted by the query.</dd>
+	  <dt>s : result</dt>
+	  <dd>Determine if the request was successful. If so fields are available in BSS.</dd>
+	</dl>
       </li>
     </ul>
 
@@ -1593,6 +1644,13 @@ Interface for performing P2P (Wi-Fi Peer-to-Peer) P2P Device operations.
 	<tr><td>persistent_group_object</td><td>o</td><td></td><td>no</td></tr>
 	<tr><td>frequency</td><td>i</td><td>Operating frequency in MHz</td><td>no</td></tr>
 	<tr><td>retry_limit</td><td>i</td><td>Optional limit on the number of scan attempts to join a group</td><td>no</td></tr>
+	<tr><td>ht40</td><td>b</td><td></td><td>no</td></tr>
+	<tr><td>vht</td><td>b</td><td></td><td>no</td></tr>
+	<tr><td>he</td><td>b</td><td></td><td>no</td></tr>
+	<tr><td>edmg</td><td>b</td><td></td><td>no</td></tr>
+	<tr><td>allow_6ghz</td><td>b</td><td></td><td>no</td></tr>
+	<tr><td>freq2</td><td>i</td><td>Center frequency in MHz for segment 2 when operating in 80 MHz + 80 MHz mode</td><td>no</td></tr>
+	<tr><td>max_oper_chwidth</td><td>i</td><td>Maximum operating channel width in MHz (20, 40, 80, 160, 320)</td><td>no</td></tr>
 	</table>
       </dd>
     </dl>
@@ -2161,6 +2219,30 @@ scan results.
       <li>
 	<h3>Age - u - (read)</h3>
 	<p>Number of seconds since the BSS was last seen.</p>
+      </li>
+      <li>
+	<h3>ANQP - a{sv} - (read)</h3>
+	<p>ANQP information of the BSS. Empty dictionary indicates no ANQP field. Named dictionary entries are:</p>
+	<table>
+	  <tr><td>CapabilityList</td><td>ay</td></tr>
+	  <tr><td>VenueName</td><td>ay</td></tr>
+	  <tr><td>NetworkAuthType</td><td>ay</td></tr>
+	  <tr><td>RoamingConsortium</td><td>ay</td></tr>
+	  <tr><td>IPAddrTypeAvailability</td><td>ay</td></tr>
+	  <tr><td>NAIRealm</td><td>ay</td></tr>
+	  <tr><td>3GPP</td><td>ay</td></tr>
+	  <tr><td>DomainName</td><td>ay</td></tr>
+	  <tr><td>FilsRealmInfo</td><td>ay</td></tr>
+	  <tr><td>HS20CapabilityList</td><td>ay</td></tr>
+	  <tr><td>HS20OperatorFriendlyName</td><td>ay</td></tr>
+	  <tr><td>HS20WanMetrics</td><td>ay</td></tr>
+	  <tr><td>HS20ConnectionCapability</td><td>ay</td></tr>
+	  <tr><td>HS20OperatingClass</td><td>ay</td></tr>
+	  <tr><td>HS20OSUProvidersList</td><td>ay</td></tr>
+	  <tr><td>HS20OperatorIconMetadata</td><td>ay</td></tr>
+	  <tr><td>HS20OSUProvidersNAIList</td><td>ay</td></tr>
+	</table>
+	<p>Unnamed ANQP elements have a generic entry name 'anqp[id]' where 'id' is the InfoID of the ANQP element as described in IEEE Std 802.11-2020, Table 9-331 (ANQP-element definitions).</p>
       </li>
     </ul>
 

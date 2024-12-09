@@ -17,6 +17,7 @@
 #include "common/sae.h"
 #include "crypto/sha384.h"
 #include "pasn/pasn_common.h"
+#include "hostapd.h"
 
 /* STA flags */
 #define WLAN_STA_AUTH BIT(0)
@@ -67,6 +68,33 @@ struct pending_eapol_rx {
 	struct wpabuf *buf;
 	struct os_reltime rx_time;
 	enum frame_encryption encrypted;
+};
+
+#define EHT_ML_MAX_STA_PROF_LEN 1024
+struct mld_info {
+	bool mld_sta;
+
+	struct ml_common_info {
+		u8 mld_addr[ETH_ALEN];
+		u16 medium_sync_delay;
+		u16 eml_capa;
+		u16 mld_capa;
+	} common_info;
+
+	struct mld_link_info {
+		u8 valid:1;
+		u8 nstr_bitmap_len:2;
+		u8 local_addr[ETH_ALEN];
+		u8 peer_addr[ETH_ALEN];
+
+		u8 nstr_bitmap[2];
+
+		u16 capability;
+
+		u16 status;
+		u16 resp_sta_profile_len;
+		u8 *resp_sta_profile;
+	} links[MAX_NUM_MLD_LINKS];
 };
 
 struct sta_info {
@@ -299,6 +327,14 @@ struct sta_info {
 #ifdef CONFIG_PASN
 	struct pasn_data *pasn;
 #endif /* CONFIG_PASN */
+
+#ifdef CONFIG_IEEE80211BE
+	struct mld_info mld_info;
+	u8 mld_assoc_link_id;
+#endif /* CONFIG_IEEE80211BE */
+
+	u16 max_idle_period; /* if nonzero, the granted BSS max idle period in
+			      * units of 1000 TUs */
 };
 
 
@@ -359,6 +395,10 @@ const u8 * ap_sta_wpa_get_dpp_pkhash(struct hostapd_data *hapd,
 void ap_sta_disconnect(struct hostapd_data *hapd, struct sta_info *sta,
 		       const u8 *addr, u16 reason);
 
+bool ap_sta_set_authorized_flag(struct hostapd_data *hapd, struct sta_info *sta,
+				int authorized);
+void ap_sta_set_authorized_event(struct hostapd_data *hapd,
+				 struct sta_info *sta, int authorized);
 void ap_sta_set_authorized(struct hostapd_data *hapd,
 			   struct sta_info *sta, int authorized);
 static inline int ap_sta_is_authorized(struct sta_info *sta)
@@ -373,11 +413,34 @@ void ap_sta_clear_disconnect_timeouts(struct hostapd_data *hapd,
 
 int ap_sta_flags_txt(u32 flags, char *buf, size_t buflen);
 void ap_sta_delayed_1x_auth_fail_disconnect(struct hostapd_data *hapd,
-					    struct sta_info *sta);
+					    struct sta_info *sta,
+					    unsigned timeout);
 int ap_sta_pending_delayed_1x_auth_fail_disconnect(struct hostapd_data *hapd,
 						   struct sta_info *sta);
 int ap_sta_re_add(struct hostapd_data *hapd, struct sta_info *sta);
 
 void ap_free_sta_pasn(struct hostapd_data *hapd, struct sta_info *sta);
+
+static inline bool ap_sta_is_mld(struct hostapd_data *hapd,
+				 struct sta_info *sta)
+{
+#ifdef CONFIG_IEEE80211BE
+	return hapd->conf->mld_ap && sta && sta->mld_info.mld_sta;
+#else /* CONFIG_IEEE80211BE */
+	return false;
+#endif /* CONFIG_IEEE80211BE */
+}
+
+static inline void ap_sta_set_mld(struct sta_info *sta, bool mld)
+{
+#ifdef CONFIG_IEEE80211BE
+	if (sta)
+		sta->mld_info.mld_sta = mld;
+#endif /* CONFIG_IEEE80211BE */
+}
+
+void ap_sta_free_sta_profile(struct mld_info *info);
+
+void hostapd_free_link_stas(struct hostapd_data *hapd);
 
 #endif /* STA_INFO_H */

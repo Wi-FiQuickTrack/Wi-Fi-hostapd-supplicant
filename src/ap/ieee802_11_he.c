@@ -12,6 +12,7 @@
 #include "utils/common.h"
 #include "common/ieee802_11_defs.h"
 #include "common/ieee802_11_common.h"
+#include "common/hw_features_common.h"
 #include "hostapd.h"
 #include "ap_config.h"
 #include "beacon.h"
@@ -224,9 +225,20 @@ u8 * hostapd_eid_he_operation(struct hostapd_data *hapd, u8 *eid)
 	pos += 6; /* skip the fixed part */
 
 	if (is_6ghz_op_class(hapd->iconf->op_class)) {
+		enum oper_chan_width oper_chwidth =
+			hostapd_get_oper_chwidth(hapd->iconf);
 		u8 seg0 = hapd->iconf->he_oper_centr_freq_seg0_idx;
 		u8 seg1 = hostapd_get_oper_centr_freq_seg1_idx(hapd->iconf);
 		u8 control;
+#ifdef CONFIG_IEEE80211BE
+		u16 punct_bitmap = hostapd_get_punct_bitmap(hapd);
+
+		if (punct_bitmap) {
+			punct_update_legacy_bw(punct_bitmap,
+					       hapd->iconf->channel,
+					       &oper_chwidth, &seg0, &seg1);
+		}
+#endif /* CONFIG_IEEE80211BE */
 
 		if (!seg0)
 			seg0 = hapd->iconf->channel;
@@ -249,16 +261,15 @@ u8 * hostapd_eid_he_operation(struct hostapd_data *hapd, u8 *eid)
 			control = 3;
 		else
 			control = center_idx_to_bw_6ghz(seg0);
-		if (hapd->iconf->he_6ghz_reg_pwr_type == 1)
-			control |= HE_6GHZ_STANDARD_POWER_AP <<
-				HE_6GHZ_OPER_INFO_CTRL_REG_INFO_SHIFT;
-		else
-			control |= HE_6GHZ_INDOOR_AP <<
-				HE_6GHZ_OPER_INFO_CTRL_REG_INFO_SHIFT;
+
+		control |= hapd->iconf->he_6ghz_reg_pwr_type <<
+			HE_6GHZ_OPER_INFO_CTRL_REG_INFO_SHIFT;
+
 		*pos++ = control;
 
 		/* Channel Center Freq Seg0/Seg1 */
-		if (hapd->iconf->he_oper_chwidth == 2) {
+		if (oper_chwidth == CONF_OPER_CHWIDTH_160MHZ ||
+		    oper_chwidth == CONF_OPER_CHWIDTH_320MHZ) {
 			/*
 			 * Seg 0 indicates the channel center frequency index of
 			 * the 160 MHz channel.

@@ -15,8 +15,13 @@
 #include "common/ieee802_11_defs.h"
 
 struct vlan_description;
+struct mld_info;
 
+#ifdef CONFIG_WFA
+#define MAX_OWN_IE_OVERRIDE 512
+#else
 #define MAX_OWN_IE_OVERRIDE 256
+#endif
 
 #ifdef _MSC_VER
 #pragma pack(push, 1)
@@ -197,9 +202,9 @@ struct wpa_auth_config {
 #ifdef CONFIG_OCV
 	int ocv; /* Operating Channel Validation */
 #endif /* CONFIG_OCV */
-#ifdef CONFIG_IEEE80211R_AP
 	u8 ssid[SSID_MAX_LEN];
 	size_t ssid_len;
+#ifdef CONFIG_IEEE80211R_AP
 	u8 mobility_domain[MOBILITY_DOMAIN_ID_LEN];
 	u8 r0_key_holder[FT_R0KH_ID_MAX_LEN];
 	size_t r0_key_holder_len;
@@ -244,6 +249,10 @@ struct wpa_auth_config {
 	unsigned int send_immediate_m3:1;
 	unsigned int change_anonce:1;
 	bool delay_eapol_tx;
+	struct wpabuf *eapol_m1_elements;
+	struct wpabuf *eapol_m3_elements;
+	bool eapol_m3_no_encrypt;
+	bool gtk_kde_random_reserved_bits;
 #endif /* CONFIG_TESTING_OPTIONS */
 	unsigned int oci_freq_override_eapol_m3;
 	unsigned int oci_freq_override_eapol_g1;
@@ -279,6 +288,21 @@ struct wpa_auth_config {
 	bool force_kdk_derivation;
 
 	bool radius_psk;
+
+	bool no_disconnect_on_group_keyerror;
+
+	/* Pointer to Multi-BSSID transmitted BSS authenticator instance.
+	 * Set only in nontransmitted BSSs, i.e., is NULL for transmitted BSS
+	 * and in BSSs that are not part of a Multi-BSSID set. */
+	struct wpa_authenticator *tx_bss_auth;
+
+#ifdef CONFIG_IEEE80211BE
+	const u8 *mld_addr;
+	int link_id;
+	struct wpa_authenticator *first_link_auth;
+#endif /* CONFIG_IEEE80211BE */
+
+	bool ssid_protection;
 };
 
 typedef enum {
@@ -290,6 +314,30 @@ typedef enum {
 	WPA_EAPOL_portControl_Auto, WPA_EAPOL_keyRun, WPA_EAPOL_keyAvailable,
 	WPA_EAPOL_keyDone, WPA_EAPOL_inc_EapolFramesTx
 } wpa_eapol_variable;
+
+struct wpa_auth_ml_key_info {
+	unsigned int n_mld_links;
+	bool mgmt_frame_prot;
+	bool beacon_prot;
+
+	struct wpa_auth_ml_link_key_info {
+		u8 link_id;
+
+		u8 gtkidx;
+		u8 gtk_len;
+		u8 pn[6];
+		const u8 *gtk;
+
+		u8 igtkidx;
+		u8 igtk_len;
+		const u8 *igtk;
+		u8 ipn[6];
+
+		u8 bigtkidx;
+		const u8 *bigtk;
+		u8 bipn[6];
+	} links[MAX_NUM_MLD_LINKS];
+};
 
 struct wpa_auth_callbacks {
 	void (*logger)(void *ctx, const u8 *addr, logger_level level,
@@ -310,6 +358,7 @@ struct wpa_auth_callbacks {
 	int (*get_seqnum)(void *ctx, const u8 *addr, int idx, u8 *seq);
 	int (*send_eapol)(void *ctx, const u8 *addr, const u8 *data,
 			  size_t data_len, int encrypt);
+	int (*get_sta_count)(void *ctx);
 	int (*for_each_sta)(void *ctx, int (*cb)(struct wpa_state_machine *sm,
 						 void *ctx), void *cb_ctx);
 	int (*for_each_auth)(void *ctx, int (*cb)(struct wpa_authenticator *a,
@@ -358,6 +407,10 @@ struct wpa_auth_callbacks {
 	int (*set_ltf_keyseed)(void *ctx, const u8 *addr, const u8 *ltf_keyseed,
 			       size_t ltf_keyseed_len);
 #endif /* CONFIG_PASN */
+#ifdef CONFIG_IEEE80211BE
+	int (*get_ml_key_info)(void *ctx, struct wpa_auth_ml_key_info *info);
+#endif /* CONFIG_IEEE80211BE */
+	int (*get_drv_flags)(void *ctx, u64 *drv_flags, u64 *drv_flags2);
 };
 
 struct wpa_authenticator * wpa_init(const u8 *addr,
@@ -383,7 +436,8 @@ wpa_validate_wpa_ie(struct wpa_authenticator *wpa_auth,
 		    const u8 *wpa_ie, size_t wpa_ie_len,
 		    const u8 *rsnxe, size_t rsnxe_len,
 		    const u8 *mdie, size_t mdie_len,
-		    const u8 *owe_dh, size_t owe_dh_len);
+		    const u8 *owe_dh, size_t owe_dh_len,
+		    struct wpa_state_machine *assoc_sm);
 int wpa_validate_osen(struct wpa_authenticator *wpa_auth,
 		      struct wpa_state_machine *sm,
 		      const u8 *osen_ie, size_t osen_ie_len);
@@ -439,9 +493,6 @@ int wpa_auth_pmksa_add_sae(struct wpa_authenticator *wpa_auth, const u8 *addr,
 void wpa_auth_add_sae_pmkid(struct wpa_state_machine *sm, const u8 *pmkid);
 int wpa_auth_pmksa_add2(struct wpa_authenticator *wpa_auth, const u8 *addr,
 			const u8 *pmk, size_t pmk_len, const u8 *pmkid,
-			int session_timeout, int akmp);
-int wpa_auth_pmksa_add3(struct wpa_authenticator *wpa_auth, const u8 *addr,
-			const u8 *pmk, size_t pmk_len, const u8 *pmkid,
 			int session_timeout, int akmp, const u8 *dpp_pkhash);
 void wpa_auth_pmksa_remove(struct wpa_authenticator *wpa_auth,
 			   const u8 *sta_addr);
@@ -467,7 +518,7 @@ wpa_auth_pmksa_get_fils_cache_id(struct wpa_authenticator *wpa_auth,
 void wpa_auth_pmksa_set_to_sm(struct rsn_pmksa_cache_entry *pmksa,
 			      struct wpa_state_machine *sm,
 			      struct wpa_authenticator *wpa_auth,
-			      u8 *pmkid, u8 *pmk);
+			      u8 *pmkid, u8 *pmk, size_t *pmk_len);
 int wpa_auth_sta_set_vlan(struct wpa_state_machine *sm, int vlan_id);
 void wpa_auth_eapol_key_tx_status(struct wpa_authenticator *wpa_auth,
 				  struct wpa_state_machine *sm, int ack);
@@ -477,9 +528,9 @@ u8 * wpa_sm_write_assoc_resp_ies(struct wpa_state_machine *sm, u8 *pos,
 				 size_t max_len, int auth_alg,
 				 const u8 *req_ies, size_t req_ies_len,
 				 int omit_rsnxe);
-void wpa_ft_process_auth(struct wpa_state_machine *sm, const u8 *bssid,
+void wpa_ft_process_auth(struct wpa_state_machine *sm,
 			 u16 auth_transaction, const u8 *ies, size_t ies_len,
-			 void (*cb)(void *ctx, const u8 *dst, const u8 *bssid,
+			 void (*cb)(void *ctx, const u8 *dst,
 				    u16 auth_transaction, u16 resp,
 				    const u8 *ies, size_t ies_len),
 			 void *ctx);
@@ -563,6 +614,7 @@ bool wpa_auth_write_fd_rsn_info(struct wpa_authenticator *wpa_auth,
 				u8 *fd_rsn_info);
 void wpa_auth_set_auth_alg(struct wpa_state_machine *sm, u16 auth_alg);
 void wpa_auth_set_dpp_z(struct wpa_state_machine *sm, const struct wpabuf *z);
+void wpa_auth_set_ssid_protection(struct wpa_state_machine *sm, bool val);
 void wpa_auth_set_transition_disable(struct wpa_authenticator *wpa_auth,
 				     u8 val);
 
@@ -600,5 +652,20 @@ void wpa_auth_set_own_ie_override(struct wpa_authenticator *wpa_auth,
 #endif
 
 void wpa_auth_sta_radius_psk_resp(struct wpa_state_machine *sm, bool success);
+
+void wpa_auth_set_ml_info(struct wpa_state_machine *sm,
+			  u8 mld_assoc_link_id, struct mld_info *info);
+void wpa_auth_ml_get_key_info(struct wpa_authenticator *a,
+			      struct wpa_auth_ml_link_key_info *info,
+			      bool mgmt_frame_prot, bool beacon_prot);
+
+void wpa_release_link_auth_ref(struct wpa_state_machine *sm,
+			       int release_link_id);
+
+#define for_each_sm_auth(sm, link_id) \
+	for (link_id = 0; link_id < MAX_NUM_MLD_LINKS; link_id++)	\
+		if (sm->mld_links[link_id].valid &&			\
+		    sm->mld_links[link_id].wpa_auth &&			\
+		    sm->wpa_auth != sm->mld_links[link_id].wpa_auth)
 
 #endif /* WPA_AUTH_H */

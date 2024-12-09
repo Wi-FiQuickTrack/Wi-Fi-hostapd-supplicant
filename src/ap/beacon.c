@@ -17,6 +17,7 @@
 #include "common/ieee802_11_common.h"
 #include "common/hw_features_common.h"
 #include "common/wpa_ctrl.h"
+#include "crypto/sha1.h"
 #include "wps/wps_defs.h"
 #include "p2p/p2p.h"
 #include "hostapd.h"
@@ -87,6 +88,12 @@ static u8 ieee802_11_erp_info(struct hostapd_data *hapd)
 
 static u8 * hostapd_eid_ds_params(struct hostapd_data *hapd, u8 *eid)
 {
+	enum hostapd_hw_mode hw_mode = hapd->iconf->hw_mode;
+
+	if (hw_mode != HOSTAPD_MODE_IEEE80211G &&
+	    hw_mode != HOSTAPD_MODE_IEEE80211B)
+		return eid;
+
 	*eid++ = WLAN_EID_DS_PARAMS;
 	*eid++ = 1;
 	*eid++ = hapd->iconf->channel;
@@ -232,12 +239,10 @@ static u8 * hostapd_fill_subband_triplets(struct hostapd_data *hapd, u8 *pos,
 			continue; /* can use same entry */
 		}
 
-		if (start && prev) {
+		if (start && prev)
 			pos = hostapd_eid_country_add(hapd, pos, end,
 						      chan_spacing,
 						      start, prev);
-			start = NULL;
-		}
 
 		/* Start new group */
 		start = prev = chan;
@@ -468,8 +473,10 @@ ieee802_11_build_ap_params_mbssid(struct hostapd_data *hapd,
 {
 	struct hostapd_iface *iface = hapd->iface;
 	struct hostapd_data *tx_bss;
-	size_t len;
+	size_t len, rnr_len = 0;
 	u8 elem_count = 0, *elem = NULL, **elem_offset = NULL, *end;
+	u8 rnr_elem_count = 0, *rnr_elem = NULL, **rnr_elem_offset = NULL;
+	size_t i;
 
 	if (!iface->mbssid_max_interfaces ||
 	    iface->num_bss > iface->mbssid_max_interfaces ||
@@ -477,9 +484,17 @@ ieee802_11_build_ap_params_mbssid(struct hostapd_data *hapd,
 	     !iface->ema_max_periodicity))
 		goto fail;
 
+	/* Make sure bss->xrates_supported is set for all BSSs to know whether
+	 * it need to be non-inherited. */
+	for (i = 0; i < iface->num_bss; i++) {
+		u8 buf[100];
+
+		hostapd_eid_ext_supp_rates(iface->bss[i], buf);
+	}
+
 	tx_bss = hostapd_mbssid_get_tx_bss(hapd);
 	len = hostapd_eid_mbssid_len(tx_bss, WLAN_FC_STYPE_BEACON, &elem_count,
-				     NULL, 0);
+				     NULL, 0, &rnr_len);
 	if (!len || (iface->conf->mbssid == ENHANCED_MBSSID_ENABLED &&
 		     elem_count > iface->ema_max_periodicity))
 		goto fail;
@@ -492,8 +507,19 @@ ieee802_11_build_ap_params_mbssid(struct hostapd_data *hapd,
 	if (!elem_offset)
 		goto fail;
 
+	if (rnr_len) {
+		rnr_elem = os_zalloc(rnr_len);
+		if (!rnr_elem)
+			goto fail;
+
+		rnr_elem_offset = os_calloc(elem_count + 1, sizeof(u8 *));
+		if (!rnr_elem_offset)
+			goto fail;
+	}
+
 	end = hostapd_eid_mbssid(tx_bss, elem, elem + len, WLAN_FC_STYPE_BEACON,
-				 elem_count, elem_offset, NULL, 0);
+				 elem_count, elem_offset, NULL, 0, rnr_elem,
+				 &rnr_elem_count, rnr_elem_offset, rnr_len);
 
 	params->mbssid_tx_iface = tx_bss->conf->iface;
 	params->mbssid_index = hostapd_mbssid_get_bss_index(hapd);
@@ -501,12 +527,19 @@ ieee802_11_build_ap_params_mbssid(struct hostapd_data *hapd,
 	params->mbssid_elem_len = end - elem;
 	params->mbssid_elem_count = elem_count;
 	params->mbssid_elem_offset = elem_offset;
+	params->rnr_elem = rnr_elem;
+	params->rnr_elem_len = rnr_len;
+	params->rnr_elem_count = rnr_elem_count;
+	params->rnr_elem_offset = rnr_elem_offset;
 	if (iface->conf->mbssid == ENHANCED_MBSSID_ENABLED)
 		params->ema = true;
 
 	return 0;
 
 fail:
+	os_free(rnr_elem);
+	os_free(rnr_elem_offset);
+	os_free(elem_offset);
 	os_free(elem);
 	wpa_printf(MSG_ERROR, "MBSSID: Configuration failed");
 	return -1;
@@ -530,20 +563,78 @@ static u8 * hostapd_eid_mbssid_config(struct hostapd_data *hapd, u8 *eid,
 }
 
 
-static u8 * hostapd_gen_probe_resp(struct hostapd_data *hapd,
-				   const struct ieee80211_mgmt *req,
-				   int is_p2p, size_t *resp_len,
-				   bool bcast_probe_resp, const u8 *known_bss,
-				   u8 known_bss_len)
+static size_t he_elem_len(struct hostapd_data *hapd)
 {
+	size_t len = 0;
+
+#ifdef CONFIG_IEEE80211AX
+	if (!hapd->iconf->ieee80211ax || hapd->conf->disable_11ax)
+		return len;
+
+	len += 3 + sizeof(struct ieee80211_he_capabilities) +
+		3 + sizeof(struct ieee80211_he_operation) +
+		3 + sizeof(struct ieee80211_he_mu_edca_parameter_set) +
+		3 + sizeof(struct ieee80211_spatial_reuse);
+	if (is_6ghz_op_class(hapd->iconf->op_class)) {
+		len += sizeof(struct ieee80211_he_6ghz_oper_info) +
+			3 + sizeof(struct ieee80211_he_6ghz_band_cap);
+		/* An additional Transmit Power Envelope element for
+		 * subordinate client */
+		if (he_reg_is_indoor(hapd->iconf->he_6ghz_reg_pwr_type))
+			len += 4;
+
+		/* An additional Transmit Power Envelope element for
+		 * default client with unit interpretation of regulatory
+		 * client EIRP */
+		if (hapd->iconf->reg_def_cli_eirp != -1 &&
+		    he_reg_is_sp(hapd->iconf->he_6ghz_reg_pwr_type))
+			len += 4;
+	}
+#endif /* CONFIG_IEEE80211AX */
+
+	return len;
+}
+
+
+struct probe_resp_params {
+	const struct ieee80211_mgmt *req;
+	bool is_p2p;
+
+	/* Generated IEs will be included inside an ML element */
+	bool is_ml_sta_info;
+	struct hostapd_data *mld_ap;
+	struct mld_info *mld_info;
+
 	struct ieee80211_mgmt *resp;
-	u8 *pos, *epos, *csa_pos;
-	size_t buflen;
+	size_t resp_len;
+	u8 *csa_pos;
+	u8 *ecsa_pos;
+	const u8 *known_bss;
+	u8 known_bss_len;
 
-	hapd = hostapd_mbssid_get_tx_bss(hapd);
+#ifdef CONFIG_IEEE80211AX
+	u8 *cca_pos;
+#endif /* CONFIG_IEEE80211AX */
+};
 
-#define MAX_PROBERESP_LEN 768
-	buflen = MAX_PROBERESP_LEN;
+
+static void hostapd_free_probe_resp_params(struct probe_resp_params *params)
+{
+#ifdef CONFIG_IEEE80211BE
+	if (!params)
+		return;
+	ap_sta_free_sta_profile(params->mld_info);
+	os_free(params->mld_info);
+	params->mld_info = NULL;
+#endif /* CONFIG_IEEE80211BE */
+}
+
+
+static size_t hostapd_probe_resp_elems_len(struct hostapd_data *hapd,
+					   struct probe_resp_params *params)
+{
+	size_t buflen = 0;
+
 #ifdef CONFIG_WPS
 	if (hapd->wps_probe_resp_ie)
 		buflen += wpabuf_len(hapd->wps_probe_resp_ie);
@@ -558,71 +649,64 @@ static u8 * hostapd_gen_probe_resp(struct hostapd_data *hapd,
 #endif /* CONFIG_FST */
 	if (hapd->conf->vendor_elements)
 		buflen += wpabuf_len(hapd->conf->vendor_elements);
+#ifdef CONFIG_TESTING_OPTIONS
+	if (hapd->conf->presp_elements)
+		buflen += wpabuf_len(hapd->conf->presp_elements);
+#endif /* CONFIG_TESTING_OPTIONS */
 	if (hapd->conf->vendor_vht) {
 		buflen += 5 + 2 + sizeof(struct ieee80211_vht_capabilities) +
 			2 + sizeof(struct ieee80211_vht_operation);
 	}
 
-#ifdef CONFIG_IEEE80211AX
-	if (hapd->iconf->ieee80211ax && !hapd->conf->disable_11ax) {
-		buflen += 3 + sizeof(struct ieee80211_he_capabilities) +
-			3 + sizeof(struct ieee80211_he_operation) +
-			3 + sizeof(struct ieee80211_he_mu_edca_parameter_set) +
-			3 + sizeof(struct ieee80211_spatial_reuse);
-		if (is_6ghz_op_class(hapd->iconf->op_class)) {
-			buflen += sizeof(struct ieee80211_he_6ghz_oper_info) +
-				3 + sizeof(struct ieee80211_he_6ghz_band_cap);
-			 /* An additional Transmit Power Envelope element for
-			  * subordinate client */
-			if (hapd->iconf->he_6ghz_reg_pwr_type ==
-			    HE_6GHZ_INDOOR_AP)
-				buflen += 4;
-		}
-	}
-#endif /* CONFIG_IEEE80211AX */
+	buflen += he_elem_len(hapd);
 
 #ifdef CONFIG_IEEE80211BE
 	if (hapd->iconf->ieee80211be && !hapd->conf->disable_11be) {
 		buflen += hostapd_eid_eht_capab_len(hapd, IEEE80211_MODE_AP);
 		buflen += 3 + sizeof(struct ieee80211_eht_operation);
+		if (hapd->iconf->punct_bitmap)
+			buflen += EHT_OPER_DISABLED_SUBCHAN_BITMAP_SIZE;
+
+		if (!params->is_ml_sta_info && hapd->conf->mld_ap) {
+			struct hostapd_data *ml_elem_ap =
+				params->mld_ap ? params->mld_ap : hapd;
+
+			buflen += hostapd_eid_eht_ml_beacon_len(
+				ml_elem_ap, params->mld_info, !!params->mld_ap);
+		}
 	}
 #endif /* CONFIG_IEEE80211BE */
 
 	buflen += hostapd_eid_mbssid_len(hapd, WLAN_FC_STYPE_PROBE_RESP, NULL,
-					 known_bss, known_bss_len);
-	buflen += hostapd_eid_rnr_len(hapd, WLAN_FC_STYPE_PROBE_RESP);
+					 params->known_bss,
+					 params->known_bss_len, NULL);
+	if (!params->is_ml_sta_info)
+		buflen += hostapd_eid_rnr_len(hapd, WLAN_FC_STYPE_PROBE_RESP,
+					      true);
 	buflen += hostapd_mbo_ie_len(hapd);
 	buflen += hostapd_eid_owe_trans_len(hapd);
 	buflen += hostapd_eid_dpp_cc_len(hapd);
 
-	resp = os_zalloc(buflen);
-	if (resp == NULL)
-		return NULL;
+	return buflen;
+}
 
-	epos = ((u8 *) resp) + MAX_PROBERESP_LEN;
 
-	resp->frame_control = IEEE80211_FC(WLAN_FC_TYPE_MGMT,
-					   WLAN_FC_STYPE_PROBE_RESP);
-	if (req)
-		os_memcpy(resp->da, req->sa, ETH_ALEN);
-	else if (bcast_probe_resp)
-		os_memset(resp->da, 0xff, ETH_ALEN);
+static u8 * hostapd_probe_resp_fill_elems(struct hostapd_data *hapd,
+					  struct probe_resp_params *params,
+					  u8 *pos, size_t len)
+{
+	u8 *csa_pos;
+	u8 *epos;
 
-	os_memcpy(resp->sa, hapd->own_addr, ETH_ALEN);
+	epos = pos + len;
 
-	os_memcpy(resp->bssid, hapd->own_addr, ETH_ALEN);
-	resp->u.probe_resp.beacon_int =
-		host_to_le16(hapd->iconf->beacon_int);
-
-	/* hardware or low-level driver will setup seq_ctrl and timestamp */
-	resp->u.probe_resp.capab_info =
-		host_to_le16(hostapd_own_capab_info(hapd));
-
-	pos = resp->u.probe_resp.variable;
-	*pos++ = WLAN_EID_SSID;
-	*pos++ = hapd->conf->ssid.ssid_len;
-	os_memcpy(pos, hapd->conf->ssid.ssid, hapd->conf->ssid.ssid_len);
-	pos += hapd->conf->ssid.ssid_len;
+	if (!params->is_ml_sta_info) {
+		*pos++ = WLAN_EID_SSID;
+		*pos++ = hapd->conf->ssid.ssid_len;
+		os_memcpy(pos, hapd->conf->ssid.ssid,
+			  hapd->conf->ssid.ssid_len);
+		pos += hapd->conf->ssid.ssid_len;
+	}
 
 	/* Supported rates */
 	pos = hostapd_eid_supp_rates(hapd, pos);
@@ -635,11 +719,18 @@ static u8 * hostapd_gen_probe_resp(struct hostapd_data *hapd,
 	/* Power Constraint element */
 	pos = hostapd_eid_pwr_constraint(hapd, pos);
 
-	/* CSA IE */
-	csa_pos = hostapd_eid_csa(hapd, pos);
-	if (csa_pos != pos)
-		hapd->cs_c_off_proberesp = csa_pos - (u8 *) resp - 1;
-	pos = csa_pos;
+	/*
+	 * CSA IE
+	 * TODO: This should be included inside the ML sta profile
+	 */
+	if (!params->is_ml_sta_info) {
+		csa_pos = hostapd_eid_csa(hapd, pos);
+		if (csa_pos != pos)
+			params->csa_pos = csa_pos - 1;
+		else
+			params->csa_pos = NULL;
+		pos = csa_pos;
+	}
 
 	/* ERP Information element */
 	pos = hostapd_eid_erp_info(hapd, pos);
@@ -650,15 +741,23 @@ static u8 * hostapd_gen_probe_resp(struct hostapd_data *hapd,
 	pos = hostapd_get_rsne(hapd, pos, epos - pos);
 	pos = hostapd_eid_bss_load(hapd, pos, epos - pos);
 	pos = hostapd_eid_mbssid(hapd, pos, epos, WLAN_FC_STYPE_PROBE_RESP, 0,
-				 NULL, known_bss, known_bss_len);
+				 NULL, params->known_bss, params->known_bss_len,
+				 NULL, NULL, NULL, 0);
 	pos = hostapd_eid_rm_enabled_capab(hapd, pos, epos - pos);
 	pos = hostapd_get_mde(hapd, pos, epos - pos);
 
-	/* eCSA IE */
-	csa_pos = hostapd_eid_ecsa(hapd, pos);
-	if (csa_pos != pos)
-		hapd->cs_c_off_ecsa_proberesp = csa_pos - (u8 *) resp - 1;
-	pos = csa_pos;
+	/*
+	 * eCSA IE
+	 * TODO: This should be included inside the ML sta profile
+	 */
+	if (!params->is_ml_sta_info) {
+		csa_pos = hostapd_eid_ecsa(hapd, pos);
+		if (csa_pos != pos)
+			params->ecsa_pos = csa_pos - 1;
+		else
+			params->ecsa_pos = NULL;
+		pos = csa_pos;
+	}
 
 	pos = hostapd_eid_supported_op_classes(hapd, pos);
 	pos = hostapd_eid_ht_capabilities(hapd, pos);
@@ -668,7 +767,7 @@ static u8 * hostapd_gen_probe_resp(struct hostapd_data *hapd,
 	 * when a list of known BSSes is included in the Probe Request frame. */
 	pos = hostapd_eid_ext_capab(hapd, pos,
 				    hapd->iconf->mbssid >= MBSSID_ENABLED &&
-				    !known_bss_len);
+				    !params->known_bss_len);
 
 	pos = hostapd_eid_time_adv(hapd, pos);
 	pos = hostapd_eid_time_zone(hapd, pos);
@@ -702,7 +801,9 @@ static u8 * hostapd_gen_probe_resp(struct hostapd_data *hapd,
 
 	pos = hostapd_eid_wb_chsw_wrapper(hapd, pos);
 
-	pos = hostapd_eid_rnr(hapd, pos, WLAN_FC_STYPE_PROBE_RESP);
+	if (!params->is_ml_sta_info)
+		pos = hostapd_eid_rnr(hapd, pos, WLAN_FC_STYPE_PROBE_RESP,
+				      true);
 	pos = hostapd_eid_fils_indic(hapd, pos, 0);
 	pos = hostapd_get_rsnxe(hapd, pos, epos - pos);
 
@@ -716,7 +817,9 @@ static u8 * hostapd_gen_probe_resp(struct hostapd_data *hapd,
 		/* BSS Color Change Announcement element */
 		cca_pos = hostapd_eid_cca(hapd, pos);
 		if (cca_pos != pos)
-			hapd->cca_c_off_proberesp = cca_pos - (u8 *) resp - 2;
+			params->cca_pos = cca_pos - 2;
+		else
+			params->cca_pos = NULL;
 		pos = cca_pos;
 
 		pos = hostapd_eid_spatial_reuse(hapd, pos);
@@ -727,6 +830,14 @@ static u8 * hostapd_gen_probe_resp(struct hostapd_data *hapd,
 
 #ifdef CONFIG_IEEE80211BE
 	if (hapd->iconf->ieee80211be && !hapd->conf->disable_11be) {
+		struct hostapd_data *ml_elem_ap =
+			params->mld_ap ? params->mld_ap : hapd;
+
+		if (ml_elem_ap->conf->mld_ap)
+			pos = hostapd_eid_eht_ml_beacon(
+				ml_elem_ap, params->mld_info,
+				pos, !!params->mld_ap);
+
 		pos = hostapd_eid_eht_capab(hapd, pos, IEEE80211_MODE_AP);
 		pos = hostapd_eid_eht_operation(hapd, pos);
 	}
@@ -753,7 +864,7 @@ static u8 * hostapd_gen_probe_resp(struct hostapd_data *hapd,
 #endif /* CONFIG_WPS */
 
 #ifdef CONFIG_P2P
-	if ((hapd->conf->p2p & P2P_ENABLED) && is_p2p &&
+	if ((hapd->conf->p2p & P2P_ENABLED) && params->is_p2p &&
 	    hapd->p2p_probe_resp_ie) {
 		os_memcpy(pos, wpabuf_head(hapd->p2p_probe_resp_ie),
 			  wpabuf_len(hapd->p2p_probe_resp_ie));
@@ -770,9 +881,9 @@ static u8 * hostapd_gen_probe_resp(struct hostapd_data *hapd,
 	pos = hostapd_eid_hs20_indication(hapd, pos);
 #endif /* CONFIG_HS20 */
 
-	pos = hostapd_eid_mbo(hapd, pos, (u8 *) resp + buflen - pos);
-	pos = hostapd_eid_owe_trans(hapd, pos, (u8 *) resp + buflen - pos);
-	pos = hostapd_eid_dpp_cc(hapd, pos, (u8 *) resp + buflen - pos);
+	pos = hostapd_eid_mbo(hapd, pos, epos - pos);
+	pos = hostapd_eid_owe_trans(hapd, pos, epos - pos);
+	pos = hostapd_eid_dpp_cc(hapd, pos, epos - pos);
 
 	if (hapd->conf->vendor_elements) {
 		os_memcpy(pos, wpabuf_head(hapd->conf->vendor_elements),
@@ -780,9 +891,169 @@ static u8 * hostapd_gen_probe_resp(struct hostapd_data *hapd,
 		pos += wpabuf_len(hapd->conf->vendor_elements);
 	}
 
-	*resp_len = pos - (u8 *) resp;
-	return (u8 *) resp;
+#ifdef CONFIG_TESTING_OPTIONS
+	if (hapd->conf->presp_elements) {
+		os_memcpy(pos, wpabuf_head(hapd->conf->presp_elements),
+			  wpabuf_len(hapd->conf->presp_elements));
+		pos += wpabuf_len(hapd->conf->presp_elements);
+	}
+#endif /* CONFIG_TESTING_OPTIONS */
+
+	return pos;
 }
+
+
+static void hostapd_gen_probe_resp(struct hostapd_data *hapd,
+				   struct probe_resp_params *params)
+{
+	u8 *pos;
+	size_t buflen;
+
+	hapd = hostapd_mbssid_get_tx_bss(hapd);
+
+#define MAX_PROBERESP_LEN 768
+	buflen = MAX_PROBERESP_LEN;
+	buflen += hostapd_probe_resp_elems_len(hapd, params);
+	params->resp = os_zalloc(buflen);
+	if (!params->resp) {
+		params->resp_len = 0;
+		return;
+	}
+
+	params->resp->frame_control = IEEE80211_FC(WLAN_FC_TYPE_MGMT,
+						   WLAN_FC_STYPE_PROBE_RESP);
+	/* Unicast the response to all requests on bands other than 6 GHz. For
+	 * the 6 GHz, unicast is used only if the actual SSID is not included in
+	 * the Beacon frames. Otherwise, broadcast response is used per IEEE
+	 * Std 802.11ax-2021, 26.17.2.3.2. Broadcast address is also used for
+	 * the Probe Response frame template for the unsolicited (i.e., not as
+	 * a response to a specific request) case. */
+	if (params->req && (!is_6ghz_op_class(hapd->iconf->op_class) ||
+		    hapd->conf->ignore_broadcast_ssid))
+		os_memcpy(params->resp->da, params->req->sa, ETH_ALEN);
+	else
+		os_memset(params->resp->da, 0xff, ETH_ALEN);
+	os_memcpy(params->resp->sa, hapd->own_addr, ETH_ALEN);
+
+	os_memcpy(params->resp->bssid, hapd->own_addr, ETH_ALEN);
+	params->resp->u.probe_resp.beacon_int =
+		host_to_le16(hapd->iconf->beacon_int);
+
+	/* hardware or low-level driver will setup seq_ctrl and timestamp */
+	params->resp->u.probe_resp.capab_info =
+		host_to_le16(hostapd_own_capab_info(hapd));
+
+	pos = hostapd_probe_resp_fill_elems(hapd, params,
+					    params->resp->u.probe_resp.variable,
+					    buflen);
+
+	params->resp_len = pos - (u8 *) params->resp;
+}
+
+
+#ifdef CONFIG_IEEE80211BE
+static void hostapd_fill_probe_resp_ml_params(struct hostapd_data *hapd,
+					      struct probe_resp_params *params,
+					      const struct ieee80211_mgmt *mgmt,
+					      int mld_id, u16 links)
+{
+	struct probe_resp_params sta_info_params;
+	struct hostapd_data *link;
+
+	params->mld_ap = NULL;
+	params->mld_info = os_zalloc(sizeof(*params->mld_info));
+	if (!params->mld_info)
+		return;
+
+	wpa_printf(MSG_DEBUG,
+		   "MLD: Got ML probe request with AP MLD ID %d for links %04x",
+		   mld_id, links);
+
+	for_each_mld_link(link, hapd) {
+		struct mld_link_info *link_info;
+		size_t buflen;
+		u8 mld_link_id = link->mld_link_id;
+		u8 *epos;
+		u8 buf[EHT_ML_MAX_STA_PROF_LEN];
+
+		/*
+		 * Set mld_ap iff the ML probe request explicitly
+		 * requested a specific MLD ID. In that case, the targeted
+		 * AP may have been a nontransmitted BSSID on the same
+		 * interface.
+		 */
+		if (mld_id != -1 && link->iface == hapd->iface)
+			params->mld_ap = link;
+
+		/* Never duplicate main Probe Response frame body */
+		if (link == hapd)
+			continue;
+
+		/* Only include requested links */
+		if (!(BIT(mld_link_id) & links))
+			continue;
+
+		link_info = &params->mld_info->links[mld_link_id];
+
+		sta_info_params.req = params->req;
+		sta_info_params.is_p2p = false;
+		sta_info_params.is_ml_sta_info = true;
+		sta_info_params.mld_ap = NULL;
+		sta_info_params.mld_info = NULL;
+
+		buflen = MAX_PROBERESP_LEN;
+		buflen += hostapd_probe_resp_elems_len(link, &sta_info_params);
+
+		if (buflen > EHT_ML_MAX_STA_PROF_LEN) {
+			wpa_printf(MSG_DEBUG,
+				   "MLD: Not including link %d in ML probe response (%zu bytes is too long)",
+				   mld_link_id, buflen);
+			goto fail;
+		}
+
+		/*
+		 * NOTE: This does not properly handle inheritance and
+		 * various other things.
+		 */
+		link_info->valid = true;
+		epos = buf;
+
+		/* Capabilities is the only fixed parameter */
+		WPA_PUT_LE16(epos, hostapd_own_capab_info(hapd));
+		epos += 2;
+
+		epos = hostapd_probe_resp_fill_elems(
+			link, &sta_info_params, epos,
+			EHT_ML_MAX_STA_PROF_LEN - 2);
+		link_info->resp_sta_profile_len = epos - buf;
+		os_free(link_info->resp_sta_profile);
+		link_info->resp_sta_profile = os_memdup(
+			buf, link_info->resp_sta_profile_len);
+		if (!link_info->resp_sta_profile)
+			link_info->resp_sta_profile_len = 0;
+		os_memcpy(link_info->local_addr, link->own_addr, ETH_ALEN);
+
+		wpa_printf(MSG_DEBUG,
+			   "MLD: ML probe response includes link sta info for %d: %u bytes (estimate %zu)",
+			   mld_link_id, link_info->resp_sta_profile_len,
+			   buflen);
+	}
+
+	if (mld_id != -1 && !params->mld_ap) {
+		wpa_printf(MSG_DEBUG,
+			   "MLD: No nontransmitted BSSID for MLD ID %d",
+			   mld_id);
+		goto fail;
+	}
+
+	return;
+
+fail:
+	hostapd_free_probe_resp_params(params);
+	params->mld_ap = NULL;
+	params->mld_info = NULL;
+}
+#endif /* CONFIG_IEEE80211BE */
 
 
 enum ssid_match_result {
@@ -899,7 +1170,7 @@ static struct hostapd_sta_info * sta_track_get(struct hostapd_iface *iface,
 	struct hostapd_sta_info *info;
 
 	dl_list_for_each(info, &iface->sta_seen, struct hostapd_sta_info, list)
-		if (os_memcmp(addr, info->addr, ETH_ALEN) == 0)
+		if (ether_addr_equal(addr, info->addr))
 			return info;
 
 	return NULL;
@@ -983,21 +1254,109 @@ void sta_track_claim_taxonomy_info(struct hostapd_iface *iface, const u8 *addr,
 #endif /* CONFIG_TAXONOMY */
 
 
+#ifdef CONFIG_IEEE80211BE
+static bool parse_ml_probe_req(const struct ieee80211_eht_ml *ml, size_t ml_len,
+			       int *mld_id, u16 *links)
+{
+	u16 ml_control;
+	const struct element *sub;
+	const u8 *pos;
+	size_t len;
+
+	*mld_id = -1;
+	*links = 0xffff;
+
+	if (ml_len < sizeof(struct ieee80211_eht_ml))
+		return false;
+
+	ml_control = le_to_host16(ml->ml_control);
+	if ((ml_control & MULTI_LINK_CONTROL_TYPE_MASK) !=
+	    MULTI_LINK_CONTROL_TYPE_PROBE_REQ) {
+		wpa_printf(MSG_DEBUG, "MLD: Not an ML probe req");
+		return false;
+	}
+
+	if (sizeof(struct ieee80211_eht_ml) + 1 > ml_len) {
+		wpa_printf(MSG_DEBUG, "MLD: ML probe req too short");
+		return false;
+	}
+
+	pos = ml->variable;
+	len = pos[0];
+	if (len < 1 || sizeof(struct ieee80211_eht_ml) + len > ml_len) {
+		wpa_printf(MSG_DEBUG,
+			   "MLD: ML probe request with invalid length");
+		return false;
+	}
+
+	if (ml_control & EHT_ML_PRES_BM_PROBE_REQ_AP_MLD_ID) {
+		if (len < 2) {
+			wpa_printf(MSG_DEBUG,
+				   "MLD: ML probe req too short for MLD ID");
+			return false;
+		}
+
+		*mld_id = pos[1];
+	}
+	pos += len;
+
+	/* Parse subelements (if there are any) */
+	len = ml_len - len - sizeof(struct ieee80211_eht_ml);
+	for_each_element_id(sub, 0, pos, len) {
+		const struct ieee80211_eht_per_sta_profile *sta;
+		u16 sta_control;
+
+		if (*links == 0xffff)
+			*links = 0;
+
+		if (sub->datalen <
+		    sizeof(struct ieee80211_eht_per_sta_profile)) {
+			wpa_printf(MSG_DEBUG,
+				   "MLD: ML probe req %d too short for sta profile",
+				   sub->datalen);
+			return false;
+		}
+
+		sta = (struct ieee80211_eht_per_sta_profile *) sub->data;
+
+		/*
+		 * Extract the link ID, do not return whether a complete or
+		 * partial profile was requested.
+		 */
+		sta_control = le_to_host16(sta->sta_control);
+		*links |= BIT(sta_control & EHT_PER_STA_CTRL_LINK_ID_MSK);
+	}
+
+	if (!for_each_element_completed(sub, pos, len)) {
+		wpa_printf(MSG_DEBUG,
+			   "MLD: ML probe req sub-elements parsing error");
+		return false;
+	}
+
+	return true;
+}
+#endif /* CONFIG_IEEE80211BE */
+
+
 void handle_probe_req(struct hostapd_data *hapd,
 		      const struct ieee80211_mgmt *mgmt, size_t len,
 		      int ssi_signal)
 {
-	u8 *resp;
 	struct ieee802_11_elems elems;
 	const u8 *ie;
 	size_t ie_len;
-	size_t i, resp_len;
+	size_t i;
 	int noack;
 	enum ssid_match_result res;
 	int ret;
 	u16 csa_offs[2];
 	size_t csa_offs_len;
 	struct radius_sta rad_info;
+	struct probe_resp_params params;
+#ifdef CONFIG_IEEE80211BE
+	int mld_id;
+	u16 links;
+#endif /* CONFIG_IEEE80211BE */
 
 	if (hapd->iconf->rssi_ignore_probe_request && ssi_signal &&
 	    ssi_signal < hapd->iconf->rssi_ignore_probe_request)
@@ -1163,7 +1522,7 @@ void handle_probe_req(struct hostapd_data *hapd,
 		else
 			hessid = elems.interworking + 1 + 2;
 		if (!is_broadcast_ether_addr(hessid) &&
-		    os_memcmp(hessid, hapd->conf->hessid, ETH_ALEN) != 0) {
+		    !ether_addr_equal(hessid, hapd->conf->hessid)) {
 			wpa_printf(MSG_MSGDUMP, "Probe Request from " MACSTR
 				   " for mismatching HESSID " MACSTR
 				   " ignored",
@@ -1229,10 +1588,28 @@ void handle_probe_req(struct hostapd_data *hapd,
 	wpa_msg_ctrl(hapd->msg_ctx, MSG_INFO, RX_PROBE_REQUEST "sa=" MACSTR
 		     " signal=%d", MAC2STR(mgmt->sa), ssi_signal);
 
-	resp = hostapd_gen_probe_resp(hapd, mgmt, elems.p2p != NULL,
-				      &resp_len, false, elems.mbssid_known_bss,
-				      elems.mbssid_known_bss_len);
-	if (resp == NULL)
+	os_memset(&params, 0, sizeof(params));
+
+#ifdef CONFIG_IEEE80211BE
+	if (hapd->conf->mld_ap && elems.probe_req_mle &&
+	    parse_ml_probe_req((struct ieee80211_eht_ml *) elems.probe_req_mle,
+			       elems.probe_req_mle_len, &mld_id, &links)) {
+		hostapd_fill_probe_resp_ml_params(hapd, &params, mgmt,
+						  mld_id, links);
+	}
+#endif /* CONFIG_IEEE80211BE */
+
+	params.req = mgmt;
+	params.is_p2p = !!elems.p2p;
+	params.known_bss = elems.mbssid_known_bss;
+	params.known_bss_len = elems.mbssid_known_bss_len;
+	params.is_ml_sta_info = false;
+
+	hostapd_gen_probe_resp(hapd, &params);
+
+	hostapd_free_probe_resp_params(&params);
+
+	if (!params.resp)
 		return;
 
 	/*
@@ -1244,24 +1621,23 @@ void handle_probe_req(struct hostapd_data *hapd,
 
 	csa_offs_len = 0;
 	if (hapd->csa_in_progress) {
-		if (hapd->cs_c_off_proberesp)
+		if (params.csa_pos)
 			csa_offs[csa_offs_len++] =
-				hapd->cs_c_off_proberesp;
+				params.csa_pos - (u8 *) params.resp;
 
-		if (hapd->cs_c_off_ecsa_proberesp)
+		if (params.ecsa_pos)
 			csa_offs[csa_offs_len++] =
-				hapd->cs_c_off_ecsa_proberesp;
+				params.ecsa_pos - (u8 *) params.resp;
 	}
 
-	ret = hostapd_drv_send_mlme(hostapd_mbssid_get_tx_bss(hapd), resp,
-				    resp_len, noack,
+	ret = hostapd_drv_send_mlme(hapd, params.resp, params.resp_len, noack,
 				    csa_offs_len ? csa_offs : NULL,
 				    csa_offs_len, 0);
 
 	if (ret < 0)
 		wpa_printf(MSG_INFO, "handle_probe_req: send failed");
 
-	os_free(resp);
+	os_free(params.resp);
 
 	wpa_printf(MSG_EXCESSIVE, "STA " MACSTR " sent probe request for %s "
 		   "SSID", MAC2STR(mgmt->sa),
@@ -1272,6 +1648,8 @@ void handle_probe_req(struct hostapd_data *hapd,
 static u8 * hostapd_probe_resp_offloads(struct hostapd_data *hapd,
 					size_t *resp_len)
 {
+	struct probe_resp_params params;
+
 	/* check probe response offloading caps and print warnings */
 	if (!(hapd->iface->drv_flags & WPA_DRIVER_FLAGS_PROBE_RESP_OFFLOAD))
 		return NULL;
@@ -1301,7 +1679,32 @@ static u8 * hostapd_probe_resp_offloads(struct hostapd_data *hapd,
 			   "this");
 
 	/* Generate a Probe Response template for the non-P2P case */
-	return hostapd_gen_probe_resp(hapd, NULL, 0, resp_len, false, NULL, 0);
+	os_memset(&params, 0, sizeof(params));
+	params.req = NULL;
+	params.is_p2p = false;
+	params.known_bss = NULL;
+	params.known_bss_len = 0;
+	params.is_ml_sta_info = false;
+	params.mld_ap = NULL;
+	params.mld_info = NULL;
+
+	hostapd_gen_probe_resp(hapd, &params);
+	*resp_len = params.resp_len;
+	if (!params.resp)
+		return NULL;
+
+	/* TODO: Avoid passing these through struct hostapd_data */
+	if (params.csa_pos)
+		hapd->cs_c_off_proberesp = params.csa_pos - (u8 *) params.resp;
+	if (params.ecsa_pos)
+		hapd->cs_c_off_ecsa_proberesp = params.ecsa_pos -
+			(u8 *) params.resp;
+#ifdef CONFIG_IEEE80211AX
+	if (params.cca_pos)
+		hapd->cca_c_off_proberesp = params.cca_pos - (u8 *) params.resp;
+#endif /* CONFIG_IEEE80211AX */
+
+	return (u8 *) params.resp;
 }
 
 #endif /* NEED_AP_MLME */
@@ -1309,18 +1712,29 @@ static u8 * hostapd_probe_resp_offloads(struct hostapd_data *hapd,
 
 #ifdef CONFIG_IEEE80211AX
 /* Unsolicited broadcast Probe Response transmission, 6 GHz only */
-static u8 * hostapd_unsol_bcast_probe_resp(struct hostapd_data *hapd,
-					   struct wpa_driver_ap_params *params)
+u8 * hostapd_unsol_bcast_probe_resp(struct hostapd_data *hapd,
+				    struct unsol_bcast_probe_resp *ubpr)
 {
+	struct probe_resp_params probe_params;
+
 	if (!is_6ghz_op_class(hapd->iconf->op_class))
 		return NULL;
 
-	params->unsol_bcast_probe_resp_interval =
+	ubpr->unsol_bcast_probe_resp_interval =
 		hapd->conf->unsol_bcast_probe_resp_interval;
 
-	return hostapd_gen_probe_resp(hapd, NULL, 0,
-				      &params->unsol_bcast_probe_resp_tmpl_len,
-				      true, NULL, 0);
+	os_memset(&probe_params, 0, sizeof(probe_params));
+	probe_params.req = NULL;
+	probe_params.is_p2p = false;
+	probe_params.known_bss = NULL;
+	probe_params.known_bss_len = 0;
+	probe_params.is_ml_sta_info = false;
+	probe_params.mld_ap = NULL;
+	probe_params.mld_info = NULL;
+
+	hostapd_gen_probe_resp(hapd, &probe_params);
+	ubpr->unsol_bcast_probe_resp_tmpl_len = probe_params.resp_len;
+	return (u8 *) probe_params.resp;
 }
 #endif /* CONFIG_IEEE80211AX */
 
@@ -1337,10 +1751,128 @@ void sta_track_del(struct hostapd_sta_info *info)
 
 #ifdef CONFIG_FILS
 
+static u16 hostapd_gen_fils_discovery_phy_index(struct hostapd_data *hapd)
+{
+#ifdef CONFIG_IEEE80211BE
+	if (hapd->iconf->ieee80211be && !hapd->conf->disable_11be)
+		return FD_CAP_PHY_INDEX_EHT;
+#endif /* CONFIG_IEEE80211BE */
+
+#ifdef CONFIG_IEEE80211AX
+	if (hapd->iconf->ieee80211ax && !hapd->conf->disable_11ax)
+		return FD_CAP_PHY_INDEX_HE;
+#endif /* CONFIG_IEEE80211AX */
+
+#ifdef CONFIG_IEEE80211AC
+	if (hapd->iconf->ieee80211ac && !hapd->conf->disable_11ac)
+		return FD_CAP_PHY_INDEX_VHT;
+#endif /* CONFIG_IEEE80211AC */
+
+	if (hapd->iconf->ieee80211n && !hapd->conf->disable_11n)
+		return FD_CAP_PHY_INDEX_HT;
+
+	return 0;
+}
+
+
+static u16 hostapd_gen_fils_discovery_nss(struct hostapd_hw_modes *mode,
+					  u16 phy_index, u8 he_mcs_nss_size)
+{
+	u16 nss = 0;
+
+	if (!mode)
+		return 0;
+
+	if (phy_index == FD_CAP_PHY_INDEX_HE) {
+		const u8 *he_mcs = mode->he_capab[IEEE80211_MODE_AP].mcs;
+		int i;
+		u16 mcs[6];
+
+		os_memset(mcs, 0xff, 6 * sizeof(u16));
+
+		if (he_mcs_nss_size == 4) {
+			mcs[0] = WPA_GET_LE16(&he_mcs[0]);
+			mcs[1] = WPA_GET_LE16(&he_mcs[2]);
+		}
+
+		if (he_mcs_nss_size == 8) {
+			mcs[2] = WPA_GET_LE16(&he_mcs[4]);
+			mcs[3] = WPA_GET_LE16(&he_mcs[6]);
+		}
+
+		if (he_mcs_nss_size == 12) {
+			mcs[4] = WPA_GET_LE16(&he_mcs[8]);
+			mcs[5] = WPA_GET_LE16(&he_mcs[10]);
+		}
+
+		for (i = 0; i < HE_NSS_MAX_STREAMS; i++) {
+			u16 nss_mask = 0x3 << (i * 2);
+
+			/*
+			 * If Tx and/or Rx indicate support for a given NSS,
+			 * count it towards the maximum NSS.
+			 */
+			if (he_mcs_nss_size == 4 &&
+			    (((mcs[0] & nss_mask) != nss_mask) ||
+			     ((mcs[1] & nss_mask) != nss_mask))) {
+				nss++;
+				continue;
+			}
+
+			if (he_mcs_nss_size == 8 &&
+			    (((mcs[2] & nss_mask) != nss_mask) ||
+			     ((mcs[3] & nss_mask) != nss_mask))) {
+				nss++;
+				continue;
+			}
+
+			if (he_mcs_nss_size == 12 &&
+			    (((mcs[4] & nss_mask) != nss_mask) ||
+			     ((mcs[5] & nss_mask) != nss_mask))) {
+				nss++;
+				continue;
+			}
+		}
+	} else if (phy_index == FD_CAP_PHY_INDEX_EHT) {
+		u8 rx_nss, tx_nss, max_nss = 0, i;
+		u8 *mcs = mode->eht_capab[IEEE80211_MODE_AP].mcs;
+
+		/*
+		 * The Supported EHT-MCS And NSS Set field for the AP contains
+		 * one to three EHT-MCS Map fields based on the supported
+		 * bandwidth. Check the first byte (max NSS for Rx/Tx that
+		 * supports EHT-MCS 0-9) for each bandwidth (<= 80,
+		 * 160, 320) to find the maximum NSS. This assumes that
+		 * the lowest MCS rates support the largest number of spatial
+		 * streams. If values are different between Tx, Rx or the
+		 * bandwidths, choose the highest value.
+		 */
+		for (i = 0; i < 3; i++) {
+			rx_nss = mcs[3 * i] & 0x0F;
+			if (rx_nss > max_nss)
+				max_nss = rx_nss;
+
+			tx_nss = (mcs[3 * i] & 0xF0) >> 4;
+			if (tx_nss > max_nss)
+				max_nss = tx_nss;
+		}
+
+		nss = max_nss;
+	}
+
+	if (nss > 4)
+		return FD_CAP_NSS_5_8 << FD_CAP_NSS_SHIFT;
+	if (nss)
+		return (nss - 1) << FD_CAP_NSS_SHIFT;
+
+	return 0;
+}
+
+
 static u16 hostapd_fils_discovery_cap(struct hostapd_data *hapd)
 {
-	u16 cap_info, phy_index = 0;
-	u8 chwidth = FD_CAP_BSS_CHWIDTH_20, mcs_nss_size = 4;
+	u16 cap_info, phy_index;
+	u8 chwidth = FD_CAP_BSS_CHWIDTH_20, he_mcs_nss_size = 4;
 	struct hostapd_hw_modes *mode = hapd->iface->current_mode;
 
 	cap_info = FD_CAP_ESS;
@@ -1348,14 +1880,15 @@ static u16 hostapd_fils_discovery_cap(struct hostapd_data *hapd)
 		cap_info |= FD_CAP_PRIVACY;
 
 	if (is_6ghz_op_class(hapd->iconf->op_class)) {
-		phy_index = FD_CAP_PHY_INDEX_HE;
-
 		switch (hapd->iconf->op_class) {
+		case 137:
+			chwidth = FD_CAP_BSS_CHWIDTH_320;
+			break;
 		case 135:
-			mcs_nss_size += 4;
+			he_mcs_nss_size += 4;
 			/* fallthrough */
 		case 134:
-			mcs_nss_size += 4;
+			he_mcs_nss_size += 4;
 			chwidth = FD_CAP_BSS_CHWIDTH_160_80_80;
 			break;
 		case 133:
@@ -1368,10 +1901,10 @@ static u16 hostapd_fils_discovery_cap(struct hostapd_data *hapd)
 	} else {
 		switch (hostapd_get_oper_chwidth(hapd->iconf)) {
 		case CONF_OPER_CHWIDTH_80P80MHZ:
-			mcs_nss_size += 4;
+			he_mcs_nss_size += 4;
 			/* fallthrough */
 		case CONF_OPER_CHWIDTH_160MHZ:
-			mcs_nss_size += 4;
+			he_mcs_nss_size += 4;
 			chwidth = FD_CAP_BSS_CHWIDTH_160_80_80;
 			break;
 		case CONF_OPER_CHWIDTH_80MHZ:
@@ -1386,56 +1919,13 @@ static u16 hostapd_fils_discovery_cap(struct hostapd_data *hapd)
 		default:
 			break;
 		}
-
-#ifdef CONFIG_IEEE80211AX
-		if (hapd->iconf->ieee80211ax && !hapd->conf->disable_11ax)
-			phy_index = FD_CAP_PHY_INDEX_HE;
-#endif /* CONFIG_IEEE80211AX */
-#ifdef CONFIG_IEEE80211AC
-		if (!phy_index &&
-		    hapd->iconf->ieee80211ac && !hapd->conf->disable_11ac)
-			phy_index = FD_CAP_PHY_INDEX_VHT;
-#endif /* CONFIG_IEEE80211AC */
-		if (!phy_index &&
-		    hapd->iconf->ieee80211n && !hapd->conf->disable_11n)
-			phy_index = FD_CAP_PHY_INDEX_HT;
 	}
 
+	phy_index = hostapd_gen_fils_discovery_phy_index(hapd);
 	cap_info |= phy_index << FD_CAP_PHY_INDEX_SHIFT;
 	cap_info |= chwidth << FD_CAP_BSS_CHWIDTH_SHIFT;
-
-	if (mode) {
-		u16 *mcs = (u16 *) mode->he_capab[IEEE80211_MODE_AP].mcs;
-		int i;
-		u16 nss = 0;
-
-		for (i = 0; i < HE_NSS_MAX_STREAMS; i++) {
-			u16 nss_mask = 0x3 << (i * 2);
-
-			if (mcs_nss_size == 4 &&
-			    (((mcs[0] & nss_mask) == nss_mask) ||
-			     ((mcs[1] & nss_mask) == nss_mask)))
-				continue;
-
-			if (mcs_nss_size == 8 &&
-			    (((mcs[2] & nss_mask) == nss_mask) ||
-			     ((mcs[3] & nss_mask) == nss_mask)))
-				continue;
-
-			if (mcs_nss_size == 12 &&
-			    (((mcs[4] & nss_mask) == nss_mask) ||
-			     ((mcs[5] & nss_mask) == nss_mask)))
-				continue;
-
-			nss++;
-		}
-
-		if (nss > 4)
-			cap_info |= FD_CAP_NSS_5_8 << FD_CAP_NSS_SHIFT;
-		else if (nss)
-			cap_info |= (nss - 1) << FD_CAP_NSS_SHIFT;
-	}
-
+	cap_info |= hostapd_gen_fils_discovery_nss(mode, phy_index,
+						   he_mcs_nss_size);
 	return cap_info;
 }
 
@@ -1458,6 +1948,17 @@ static u8 * hostapd_gen_fils_discovery(struct hostapd_data *hapd, size_t *len)
 		FD_FRAME_CTL_CAP_PRESENT;
 	total_len += 4 + 1 + 2;
 
+	/* Fill primary channel information for 6 GHz channels with over 20 MHz
+	 * bandwidth, if the primary channel is not a PSC */
+	if (is_6ghz_op_class(hapd->iconf->op_class) &&
+	    !is_6ghz_psc_frequency(ieee80211_chan_to_freq(
+					   NULL, hapd->iconf->op_class,
+					   hapd->iconf->channel)) &&
+	    op_class_to_bandwidth(hapd->iconf->op_class) > 20) {
+		ctl |= FD_FRAME_CTL_PRI_CHAN_PRESENT;
+		total_len += 2;
+	}
+
 	/* Check for optional subfields and calculate length */
 	if (wpa_auth_write_fd_rsn_info(hapd->wpa_auth, fd_rsn_info)) {
 		ctl |= FD_FRAME_CTL_RSN_INFO_PRESENT;
@@ -1470,20 +1971,15 @@ static u8 * hostapd_gen_fils_discovery(struct hostapd_data *hapd, size_t *len)
 		total_len += 3;
 	}
 
-	total_len += hostapd_eid_rnr_len(hapd, WLAN_FC_STYPE_ACTION);
+	total_len += hostapd_eid_rnr_len(hapd, WLAN_FC_STYPE_ACTION, true);
 
 	pos = hostapd_eid_fils_indic(hapd, buf, 0);
 	buf_len = pos - buf;
 	total_len += buf_len;
 
-#ifdef CONFIG_IEEE80211AX
-	/* Transmit Power Envelope element(s) */
-	if (is_6ghz_op_class(hapd->iconf->op_class)) {
-		total_len += 4;
-		if (hapd->iconf->he_6ghz_reg_pwr_type == HE_6GHZ_INDOOR_AP)
-			total_len += 4;
-	}
-#endif /* CONFIG_IEEE80211AX */
+	/* he_elem_len() may return too large a value for FD frame, but that is
+	 * fine here since this is used as the maximum length of the buffer. */
+	total_len += he_elem_len(hapd);
 
 	head = os_zalloc(total_len);
 	if (!head)
@@ -1524,9 +2020,11 @@ static u8 * hostapd_gen_fils_discovery(struct hostapd_data *hapd, size_t *len)
 	WPA_PUT_LE16(pos, hostapd_fils_discovery_cap(hapd));
 	pos += 2;
 
-	/* Operating Class - not present */
-
-	/* Primary Channel - not present */
+	/* Operating Class and Primary Channel - if a 6 GHz chan is non PSC */
+	if (ctl & FD_FRAME_CTL_PRI_CHAN_PRESENT) {
+		*pos++ = hapd->iconf->op_class;
+		*pos++ = hapd->iconf->channel;
+	}
 
 	/* AP Configuration Sequence Number - not present */
 
@@ -1549,7 +2047,7 @@ static u8 * hostapd_gen_fils_discovery(struct hostapd_data *hapd, size_t *len)
 	/* Fill in the Length field value */
 	*length_pos = pos - (length_pos + 1);
 
-	pos = hostapd_eid_rnr(hapd, pos, WLAN_FC_STYPE_ACTION);
+	pos = hostapd_eid_rnr(hapd, pos, WLAN_FC_STYPE_ACTION, true);
 
 	/* FILS Indication element */
 	if (buf_len) {
@@ -1633,35 +2131,29 @@ int ieee802_11_build_ap_params(struct hostapd_data *hapd,
 	}
 #endif /* CONFIG_IEEE80211AC */
 
-#ifdef CONFIG_IEEE80211AX
-	if (hapd->iconf->ieee80211ax && !hapd->conf->disable_11ax) {
-		tail_len += 3 + sizeof(struct ieee80211_he_capabilities) +
-			3 + sizeof(struct ieee80211_he_operation) +
-			3 + sizeof(struct ieee80211_he_mu_edca_parameter_set) +
-			3 + sizeof(struct ieee80211_spatial_reuse);
-		if (is_6ghz_op_class(hapd->iconf->op_class)) {
-			tail_len += sizeof(struct ieee80211_he_6ghz_oper_info) +
-				3 + sizeof(struct ieee80211_he_6ghz_band_cap);
-			 /* An additional Transmit Power Envelope element for
-			  * subordinate client */
-			if (hapd->iconf->he_6ghz_reg_pwr_type ==
-			    HE_6GHZ_INDOOR_AP)
-				tail_len += 4;
-		}
-	}
-#endif /* CONFIG_IEEE80211AX */
+	tail_len += he_elem_len(hapd);
 
 #ifdef CONFIG_IEEE80211BE
 	if (hapd->iconf->ieee80211be && !hapd->conf->disable_11be) {
 		tail_len += hostapd_eid_eht_capab_len(hapd, IEEE80211_MODE_AP);
 		tail_len += 3 + sizeof(struct ieee80211_eht_operation);
+		if (hapd->iconf->punct_bitmap)
+			tail_len += EHT_OPER_DISABLED_SUBCHAN_BITMAP_SIZE;
+
+		/*
+		 * TODO: Multi-Link element has variable length and can be
+		 * long based on the common info and number of per
+		 * station profiles. For now use 256.
+		 */
+		if (hapd->conf->mld_ap)
+			tail_len += 256;
 	}
 #endif /* CONFIG_IEEE80211BE */
 
 	if (hapd->iconf->mbssid == ENHANCED_MBSSID_ENABLED &&
 	    hapd == hostapd_mbssid_get_tx_bss(hapd))
 		tail_len += 5; /* Multiple BSSID Configuration element */
-	tail_len += hostapd_eid_rnr_len(hapd, WLAN_FC_STYPE_BEACON);
+	tail_len += hostapd_eid_rnr_len(hapd, WLAN_FC_STYPE_BEACON, true);
 	tail_len += hostapd_mbo_ie_len(hapd);
 	tail_len += hostapd_eid_owe_trans_len(hapd);
 	tail_len += hostapd_eid_dpp_cc_len(hapd);
@@ -1797,7 +2289,7 @@ int ieee802_11_build_ap_params(struct hostapd_data *hapd,
 
 	tailpos = hostapd_eid_wb_chsw_wrapper(hapd, tailpos);
 
-	tailpos = hostapd_eid_rnr(hapd, tailpos, WLAN_FC_STYPE_BEACON);
+	tailpos = hostapd_eid_rnr(hapd, tailpos, WLAN_FC_STYPE_BEACON, true);
 	tailpos = hostapd_eid_fils_indic(hapd, tailpos, 0);
 	tailpos = hostapd_get_rsnxe(hapd, tailpos, tailend - tailpos);
 	tailpos = hostapd_eid_mbssid_config(hapd, tailpos,
@@ -1825,6 +2317,9 @@ int ieee802_11_build_ap_params(struct hostapd_data *hapd,
 
 #ifdef CONFIG_IEEE80211BE
 	if (hapd->iconf->ieee80211be && !hapd->conf->disable_11be) {
+		if (hapd->conf->mld_ap)
+			tailpos = hostapd_eid_eht_ml_beacon(hapd, NULL,
+							    tailpos, false);
 		tailpos = hostapd_eid_eht_capab(hapd, tailpos,
 						IEEE80211_MODE_AP);
 		tailpos = hostapd_eid_eht_operation(hapd, tailpos);
@@ -1883,6 +2378,50 @@ int ieee802_11_build_ap_params(struct hostapd_data *hapd,
 
 	resp = hostapd_probe_resp_offloads(hapd, &resp_len);
 #endif /* NEED_AP_MLME */
+
+	/* If key management offload is enabled, configure PSK to the driver. */
+	if (wpa_key_mgmt_wpa_psk_no_sae(hapd->conf->wpa_key_mgmt) &&
+	    (hapd->iface->drv_flags2 &
+	     WPA_DRIVER_FLAGS2_4WAY_HANDSHAKE_AP_PSK)) {
+		if (hapd->conf->ssid.wpa_psk && hapd->conf->ssid.wpa_psk_set) {
+			os_memcpy(params->psk, hapd->conf->ssid.wpa_psk->psk,
+				  PMK_LEN);
+			params->psk_len = PMK_LEN;
+		} else if (hapd->conf->ssid.wpa_passphrase &&
+			   pbkdf2_sha1(hapd->conf->ssid.wpa_passphrase,
+				       hapd->conf->ssid.ssid,
+				       hapd->conf->ssid.ssid_len, 4096,
+				       params->psk, PMK_LEN) == 0) {
+			params->psk_len = PMK_LEN;
+		}
+	}
+
+#ifdef CONFIG_SAE
+	/* If SAE offload is enabled, provide password to lower layer for
+	 * SAE authentication and PMK generation.
+	 */
+	if (wpa_key_mgmt_sae(hapd->conf->wpa_key_mgmt) &&
+	    (hapd->iface->drv_flags2 & WPA_DRIVER_FLAGS2_SAE_OFFLOAD_AP)) {
+		if (hostapd_sae_pk_in_use(hapd->conf)) {
+			wpa_printf(MSG_ERROR,
+				   "SAE PK not supported with SAE offload");
+			return -1;
+		}
+
+		if (hostapd_sae_pw_id_in_use(hapd->conf)) {
+			wpa_printf(MSG_ERROR,
+				   "SAE Password Identifiers not supported with SAE offload");
+			return -1;
+		}
+
+		params->sae_password = sae_get_password(hapd, NULL, NULL, NULL,
+							NULL, NULL);
+		if (!params->sae_password) {
+			wpa_printf(MSG_ERROR, "SAE password not configured for offload");
+			return -1;
+		}
+	}
+#endif /* CONFIG_SAE */
 
 	params->head = (u8 *) head;
 	params->head_len = head_len;
@@ -1974,6 +2513,14 @@ int ieee802_11_build_ap_params(struct hostapd_data *hapd,
 		}
 	}
 
+#ifdef CONFIG_IEEE80211BE
+	if (hapd->conf->mld_ap && hapd->iconf->ieee80211be &&
+	    !hapd->conf->disable_11be) {
+		params->mld_ap = true;
+		params->mld_link_id = hapd->mld_link_id;
+	}
+#endif /* CONFIG_IEEE80211BE */
+
 	return 0;
 }
 
@@ -1990,14 +2537,20 @@ void ieee802_11_free_ap_params(struct wpa_driver_ap_params *params)
 	params->mbssid_elem = NULL;
 	os_free(params->mbssid_elem_offset);
 	params->mbssid_elem_offset = NULL;
+	os_free(params->rnr_elem);
+	params->rnr_elem = NULL;
+	os_free(params->rnr_elem_offset);
+	params->rnr_elem_offset = NULL;
 #ifdef CONFIG_FILS
 	os_free(params->fd_frame_tmpl);
 	params->fd_frame_tmpl = NULL;
 #endif /* CONFIG_FILS */
 #ifdef CONFIG_IEEE80211AX
-	os_free(params->unsol_bcast_probe_resp_tmpl);
-	params->unsol_bcast_probe_resp_tmpl = NULL;
+	os_free(params->ubpr.unsol_bcast_probe_resp_tmpl);
+	params->ubpr.unsol_bcast_probe_resp_tmpl = NULL;
 #endif /* CONFIG_IEEE80211AX */
+	os_free(params->allowed_freqs);
+	params->allowed_freqs = NULL;
 }
 
 
@@ -2009,7 +2562,9 @@ static int __ieee802_11_set_beacon(struct hostapd_data *hapd)
 	struct hostapd_config *iconf = iface->conf;
 	struct hostapd_hw_modes *cmode = iface->current_mode;
 	struct wpabuf *beacon, *proberesp, *assocresp;
-	int res, ret = -1;
+	bool twt_he_responder = false;
+	int res, ret = -1, i;
+	struct hostapd_hw_modes *mode;
 
 	if (!hapd->drv_priv) {
 		wpa_printf(MSG_ERROR, "Interface is disabled");
@@ -2051,11 +2606,13 @@ static int __ieee802_11_set_beacon(struct hostapd_data *hapd)
 	params.he_bss_color_partial =
 		hapd->iface->conf->he_op.he_bss_color_partial;
 	params.he_bss_color = hapd->iface->conf->he_op.he_bss_color;
-	params.twt_responder = hostapd_get_he_twt_responder(hapd,
-							    IEEE80211_MODE_AP);
-	params.unsol_bcast_probe_resp_tmpl =
-		hostapd_unsol_bcast_probe_resp(hapd, &params);
+	twt_he_responder = hostapd_get_he_twt_responder(hapd,
+							IEEE80211_MODE_AP);
+	params.ubpr.unsol_bcast_probe_resp_tmpl =
+		hostapd_unsol_bcast_probe_resp(hapd, &params.ubpr);
 #endif /* CONFIG_IEEE80211AX */
+	params.twt_responder =
+		twt_he_responder || hostapd_get_ht_vht_twt_responder(hapd);
 	hapd->reenable_beacon = 0;
 #ifdef CONFIG_SAE
 	params.sae_pwe = hapd->conf->sae_pwe;
@@ -2064,6 +2621,10 @@ static int __ieee802_11_set_beacon(struct hostapd_data *hapd)
 #ifdef CONFIG_FILS
 	params.fd_frame_tmpl = hostapd_fils_discovery(hapd, &params);
 #endif /* CONFIG_FILS */
+
+#ifdef CONFIG_IEEE80211BE
+	params.punct_bitmap = iconf->punct_bitmap;
+#endif /* CONFIG_IEEE80211BE */
 
 	if (cmode &&
 	    hostapd_set_freq_params(&freq, iconf->hw_mode, iface->freq,
@@ -2077,8 +2638,28 @@ static int __ieee802_11_set_beacon(struct hostapd_data *hapd)
 				    hostapd_get_oper_centr_freq_seg1_idx(iconf),
 				    cmode->vht_capab,
 				    &cmode->he_capab[IEEE80211_MODE_AP],
-				    &cmode->eht_capab[IEEE80211_MODE_AP]) == 0)
+				    &cmode->eht_capab[IEEE80211_MODE_AP],
+				    hostapd_get_punct_bitmap(hapd)) == 0) {
+		freq.link_id = -1;
+#ifdef CONFIG_IEEE80211BE
+		if (hapd->conf->mld_ap)
+			freq.link_id = hapd->mld_link_id;
+#endif /* CONFIG_IEEE80211BE */
 		params.freq = &freq;
+	}
+
+	for (i = 0; i < hapd->iface->num_hw_features; i++) {
+		mode = &hapd->iface->hw_features[i];
+
+		if (iconf->hw_mode != HOSTAPD_MODE_IEEE80211ANY &&
+		    iconf->hw_mode != mode->mode)
+			continue;
+
+		hostapd_get_hw_mode_any_channels(hapd, mode,
+						 !(iconf->acs_freq_list.num ||
+						   iconf->acs_ch_list.num),
+						 true, &params.allowed_freqs);
+	}
 
 	res = hostapd_drv_set_ap(hapd, &params);
 	hostapd_free_ap_extra_ies(hapd, beacon, proberesp, assocresp);
@@ -2092,12 +2673,18 @@ fail:
 }
 
 
+void ieee802_11_set_beacon_per_bss_only(struct hostapd_data *hapd)
+{
+	__ieee802_11_set_beacon(hapd);
+}
+
+
 int ieee802_11_set_beacon(struct hostapd_data *hapd)
 {
 	struct hostapd_iface *iface = hapd->iface;
 	int ret;
 	size_t i, j;
-	bool is_6g;
+	bool is_6g, hapd_mld = false;
 
 	ret = __ieee802_11_set_beacon(hapd);
 	if (ret != 0)
@@ -2106,21 +2693,35 @@ int ieee802_11_set_beacon(struct hostapd_data *hapd)
 	if (!iface->interfaces || iface->interfaces->count <= 1)
 		return 0;
 
-	/* Update Beacon frames in case of 6 GHz colocation */
+#ifdef CONFIG_IEEE80211BE
+	hapd_mld = hapd->conf->mld_ap;
+#endif /* CONFIG_IEEE80211BE */
+
+	/* Update Beacon frames in case of 6 GHz colocation or AP MLD */
 	is_6g = is_6ghz_op_class(iface->conf->op_class);
 	for (j = 0; j < iface->interfaces->count; j++) {
-		struct hostapd_iface *colocated;
+		struct hostapd_iface *other;
+		bool other_iface_6g;
 
-		colocated = iface->interfaces->iface[j];
-		if (colocated == iface || !colocated || !colocated->conf)
+		other = iface->interfaces->iface[j];
+		if (other == iface || !other || !other->conf)
 			continue;
 
-		if (is_6g == is_6ghz_op_class(colocated->conf->op_class))
+		other_iface_6g = is_6ghz_op_class(other->conf->op_class);
+
+		if (is_6g == other_iface_6g && !hapd_mld)
 			continue;
 
-		for (i = 0; i < colocated->num_bss; i++) {
-			if (colocated->bss[i] && colocated->bss[i]->started)
-				__ieee802_11_set_beacon(colocated->bss[i]);
+		for (i = 0; i < other->num_bss; i++) {
+#ifdef CONFIG_IEEE80211BE
+			if (is_6g == other_iface_6g &&
+			    !(hapd_mld && other->bss[i]->conf->mld_ap &&
+			      hostapd_is_ml_partner(hapd, other->bss[i])))
+				continue;
+#endif /* CONFIG_IEEE80211BE */
+
+			if (other->bss[i] && other->bss[i]->started)
+				__ieee802_11_set_beacon(other->bss[i]);
 		}
 	}
 

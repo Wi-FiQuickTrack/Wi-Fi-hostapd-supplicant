@@ -515,6 +515,8 @@ static int * wpas_add_channels(const struct oper_class_map *op,
 		num_primary_channels = 4;
 	else if (op->bw == BW160)
 		num_primary_channels = 8;
+	else if (op->bw == BW320)
+		num_primary_channels = 16;
 	else
 		num_primary_channels = 1;
 
@@ -561,6 +563,7 @@ static int * wpas_op_class_freqs(const struct oper_class_map *op,
 	u8 channels_80mhz_6ghz[] = { 7, 23, 39, 55, 71, 87, 103, 119, 135, 151,
 				     167, 183, 199, 215 };
 	u8 channels_160mhz_6ghz[] = { 15, 47, 79, 111, 143, 175, 207 };
+	u8 channels_320mhz_6ghz[] = { 31, 63, 95, 127, 159, 191 };
 	const u8 *channels = NULL;
 	size_t num_chan = 0;
 	bool is_6ghz = is_6ghz_op_class(op->op_class);
@@ -579,6 +582,9 @@ static int * wpas_op_class_freqs(const struct oper_class_map *op,
 			channels_160mhz_5ghz;
 		num_chan =  is_6ghz ? ARRAY_SIZE(channels_160mhz_6ghz) :
 			ARRAY_SIZE(channels_160mhz_5ghz);
+	} else if (op->bw == BW320) {
+		channels = channels_320mhz_6ghz;
+		num_chan = ARRAY_SIZE(channels_320mhz_6ghz);
 	}
 
 	return wpas_add_channels(op, mode, channels, num_chan);
@@ -772,6 +778,7 @@ int wpas_get_op_chan_phy(int freq, const u8 *ies, size_t ies_len,
 
 
 static int wpas_beacon_rep_add_frame_body(struct bitfield *eids,
+					  struct bitfield *ext_eids,
 					  enum beacon_report_detail detail,
 					  struct wpa_bss *bss, u8 *buf,
 					  size_t buf_len, const u8 **ies_buf,
@@ -828,7 +835,9 @@ static int wpas_beacon_rep_add_frame_body(struct bitfield *eids,
 	 */
 	while (ies_len > 2 && 2U + ies[1] <= ies_len && rem_len > 0) {
 		if (detail == BEACON_REPORT_DETAIL_ALL_FIELDS_AND_ELEMENTS ||
-		    (eids && bitfield_is_set(eids, ies[0]))) {
+		    (eids && bitfield_is_set(eids, ies[0])) ||
+		    (ext_eids && ies[0] == WLAN_EID_EXTENSION && ies[1] &&
+		     bitfield_is_set(ext_eids, ies[2]))) {
 			u8 elen = ies[1];
 
 			if (2 + elen > buf + buf_len - pos ||
@@ -876,7 +885,8 @@ static int wpas_add_beacon_rep_elem(struct beacon_rep_data *data,
 
 	os_memcpy(buf, rep, sizeof(*rep));
 
-	ret = wpas_beacon_rep_add_frame_body(data->eids, data->report_detail,
+	ret = wpas_beacon_rep_add_frame_body(data->eids, data->ext_eids,
+					     data->report_detail,
 					     bss, buf + sizeof(*rep),
 					     14 + *ie_len, ie, ie_len,
 					     idx == 0);
@@ -932,8 +942,8 @@ static int wpas_add_beacon_rep(struct wpa_supplicant *wpa_s,
 	struct rrm_measurement_beacon_report rep;
 	u8 idx = 0;
 
-	if (os_memcmp(data->bssid, broadcast_ether_addr, ETH_ALEN) != 0 &&
-	    os_memcmp(data->bssid, bss->bssid, ETH_ALEN) != 0)
+	if (!ether_addr_equal(data->bssid, broadcast_ether_addr) &&
+	    !ether_addr_equal(data->bssid, bss->bssid))
 		return 0;
 
 	if (data->ssid_len &&
@@ -1033,7 +1043,7 @@ static void wpas_rrm_scan_timeout(void *eloop_ctx, void *timeout_ctx)
 	}
 	os_get_reltime(&wpa_s->beacon_rep_scan);
 	if (wpa_s->scanning || wpas_p2p_in_progress(wpa_s) ||
-	    wpa_supplicant_trigger_scan(wpa_s, params))
+	    wpa_supplicant_trigger_scan(wpa_s, params, true, false))
 		wpas_rrm_refuse_request(wpa_s);
 	params->duration = prev_duration;
 }
@@ -1043,6 +1053,7 @@ static int wpas_rm_handle_beacon_req_subelem(struct wpa_supplicant *wpa_s,
 					     struct beacon_rep_data *data,
 					     u8 sid, u8 slen, const u8 *subelem)
 {
+	struct bitfield *eids;
 	u8 report_info, i;
 
 	switch (sid) {
@@ -1096,6 +1107,7 @@ static int wpas_rm_handle_beacon_req_subelem(struct wpa_supplicant *wpa_s,
 
 		break;
 	case WLAN_BEACON_REQUEST_SUBELEM_REQUEST:
+	case WLAN_BEACON_REQUEST_SUBELEM_EXT_REQUEST:
 		if (data->report_detail !=
 		    BEACON_REPORT_DETAIL_REQUESTED_ONLY) {
 			wpa_printf(MSG_DEBUG,
@@ -1111,20 +1123,46 @@ static int wpas_rm_handle_beacon_req_subelem(struct wpa_supplicant *wpa_s,
 			return -1;
 		}
 
-		if (data->eids) {
+		if (sid == WLAN_BEACON_REQUEST_SUBELEM_EXT_REQUEST) {
+			if (slen < 2) {
+				wpa_printf(MSG_DEBUG,
+					   "Invalid extended request");
+				return -1;
+			}
+			if (subelem[0] != WLAN_EID_EXTENSION) {
+				wpa_printf(MSG_DEBUG,
+					   "Skip unknown Requested Element ID %u in Extended Request subelement",
+					   subelem[0]);
+				break;
+			}
+
+			/* Skip the Requested Element ID field */
+			subelem++;
+			slen--;
+		}
+
+		if ((sid == WLAN_BEACON_REQUEST_SUBELEM_REQUEST &&
+		     data->eids) ||
+		    (sid == WLAN_BEACON_REQUEST_SUBELEM_EXT_REQUEST &&
+		    data->ext_eids)) {
 			wpa_printf(MSG_DEBUG,
-				   "Beacon Request: Request subelement appears more than once");
+				   "Beacon Request: Request sub elements appear more than once");
 			return -1;
 		}
 
-		data->eids = bitfield_alloc(255);
-		if (!data->eids) {
+		eids = bitfield_alloc(255);
+		if (!eids) {
 			wpa_printf(MSG_DEBUG, "Failed to allocate EIDs bitmap");
 			return -1;
 		}
 
+		if (sid == WLAN_BEACON_REQUEST_SUBELEM_REQUEST)
+			data->eids = eids;
+		else
+			data->ext_eids = eids;
+
 		for (i = 0; i < slen; i++)
-			bitfield_set(data->eids, subelem[i]);
+			bitfield_set(eids, subelem[i]);
 		break;
 	case WLAN_BEACON_REQUEST_SUBELEM_AP_CHANNEL:
 		/* Skip - it will be processed when freqs are added */
@@ -1480,6 +1518,26 @@ void wpas_rrm_handle_link_measurement_request(struct wpa_supplicant *wpa_s,
 }
 
 
+static bool wpas_beacon_rep_scan_match(struct wpa_supplicant *wpa_s,
+				       const u8 *bssid)
+{
+	u8 i;
+
+	if (!wpa_s->valid_links)
+		return ether_addr_equal(wpa_s->current_bss->bssid, bssid);
+
+	for_each_link(wpa_s->valid_links, i) {
+		if (ether_addr_equal(wpa_s->links[i].bssid, bssid))
+			return true;
+	}
+
+	wpa_printf(MSG_DEBUG, "RRM: MLD: no match for TSF BSSID=" MACSTR,
+		   MAC2STR(bssid));
+
+	return false;
+}
+
+
 int wpas_beacon_rep_scan_process(struct wpa_supplicant *wpa_s,
 				 struct wpa_scan_results *scan_res,
 				 struct scan_info *info)
@@ -1501,8 +1559,7 @@ int wpas_beacon_rep_scan_process(struct wpa_supplicant *wpa_s,
 		   MAC2STR(info->scan_start_tsf_bssid),
 		   MAC2STR(wpa_s->current_bss->bssid));
 	if ((wpa_s->drv_rrm_flags & WPA_DRIVER_FLAGS_SUPPORT_BEACON_REPORT) &&
-	    os_memcmp(info->scan_start_tsf_bssid, wpa_s->current_bss->bssid,
-		      ETH_ALEN) != 0) {
+	    !wpas_beacon_rep_scan_match(wpa_s, info->scan_start_tsf_bssid)) {
 		wpa_printf(MSG_DEBUG,
 			   "RRM: Ignore scan results due to mismatching TSF BSSID");
 		goto out;
@@ -1517,8 +1574,8 @@ int wpas_beacon_rep_scan_process(struct wpa_supplicant *wpa_s,
 
 		if ((wpa_s->drv_rrm_flags &
 		     WPA_DRIVER_FLAGS_SUPPORT_BEACON_REPORT) &&
-		    os_memcmp(scan_res->res[i]->tsf_bssid,
-			      wpa_s->current_bss->bssid, ETH_ALEN) != 0) {
+		    !wpas_beacon_rep_scan_match(wpa_s,
+						scan_res->res[i]->tsf_bssid)) {
 			wpa_printf(MSG_DEBUG,
 				   "RRM: Ignore scan result for " MACSTR
 				   " due to mismatching TSF BSSID" MACSTR,
@@ -1587,6 +1644,7 @@ void wpas_clear_beacon_rep_data(struct wpa_supplicant *wpa_s)
 
 	eloop_cancel_timeout(wpas_rrm_scan_timeout, wpa_s, NULL);
 	bitfield_free(data->eids);
+	bitfield_free(data->ext_eids);
 	os_free(data->scan_params.freqs);
 	os_memset(data, 0, sizeof(*data));
 }

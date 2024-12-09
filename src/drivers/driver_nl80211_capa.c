@@ -50,8 +50,7 @@ static u32 get_nl80211_protocol_features(struct wpa_driver_nl80211_data *drv)
 		return 0;
 	}
 
-	if (send_and_recv_msgs(drv, msg, protocol_feature_handler, &feat,
-			       NULL, NULL) == 0)
+	if (send_and_recv_resp(drv, msg, protocol_feature_handler, &feat) == 0)
 		return feat;
 
 	return 0;
@@ -601,6 +600,10 @@ static void wiphy_info_ext_feature_flags(struct wiphy_info_data *info,
 		capa->flags |= WPA_DRIVER_FLAGS_4WAY_HANDSHAKE_8021X;
 
 	if (ext_feature_isset(ext_features, len,
+			      NL80211_EXT_FEATURE_SAE_OFFLOAD))
+		capa->flags2 |= WPA_DRIVER_FLAGS2_SAE_OFFLOAD_STA;
+
+	if (ext_feature_isset(ext_features, len,
 			      NL80211_EXT_FEATURE_MFP_OPTIONAL))
 		capa->flags |= WPA_DRIVER_FLAGS_MFP_OPTIONAL;
 
@@ -664,6 +667,9 @@ static void wiphy_info_ext_feature_flags(struct wiphy_info_data *info,
 			      NL80211_EXT_FEATURE_UNSOL_BCAST_PROBE_RESP))
 		info->drv->unsol_bcast_probe_resp = 1;
 
+	if (ext_feature_isset(ext_features, len, NL80211_EXT_FEATURE_PUNCT))
+		info->drv->puncturing = 1;
+
 	if (ext_feature_isset(ext_features, len,
 			      NL80211_EXT_FEATURE_BEACON_PROTECTION_CLIENT))
 		capa->flags2 |= WPA_DRIVER_FLAGS2_BEACON_PROTECTION_CLIENT;
@@ -674,7 +680,7 @@ static void wiphy_info_ext_feature_flags(struct wiphy_info_data *info,
 
 	if (ext_feature_isset(ext_features, len,
 			      NL80211_EXT_FEATURE_RADAR_BACKGROUND))
-		capa->flags2 |= WPA_DRIVER_RADAR_BACKGROUND;
+		capa->flags2 |= WPA_DRIVER_FLAGS2_RADAR_BACKGROUND;
 
 	if (ext_feature_isset(ext_features, len,
 			      NL80211_EXT_FEATURE_SECURE_LTF)) {
@@ -694,6 +700,26 @@ static void wiphy_info_ext_feature_flags(struct wiphy_info_data *info,
 		capa->flags2 |= WPA_DRIVER_FLAGS2_PROT_RANGE_NEG_STA;
 		capa->flags2 |= WPA_DRIVER_FLAGS2_PROT_RANGE_NEG_AP;
 	}
+
+	if (ext_feature_isset(ext_features, len,
+			      NL80211_EXT_FEATURE_SCAN_MIN_PREQ_CONTENT))
+		capa->flags2 |= WPA_DRIVER_FLAGS2_SCAN_MIN_PREQ;
+
+	if (ext_feature_isset(ext_features, len,
+			      NL80211_EXT_FEATURE_4WAY_HANDSHAKE_AP_PSK))
+		capa->flags2 |= WPA_DRIVER_FLAGS2_4WAY_HANDSHAKE_AP_PSK;
+
+	if (ext_feature_isset(ext_features, len,
+			      NL80211_EXT_FEATURE_OWE_OFFLOAD))
+		capa->flags2 |= WPA_DRIVER_FLAGS2_OWE_OFFLOAD_STA;
+
+	if (ext_feature_isset(ext_features, len,
+			      NL80211_EXT_FEATURE_OWE_OFFLOAD_AP))
+		capa->flags2 |= WPA_DRIVER_FLAGS2_OWE_OFFLOAD_AP;
+
+	if (ext_feature_isset(ext_features, len,
+			      NL80211_EXT_FEATURE_SAE_OFFLOAD_AP))
+		capa->flags2 |= WPA_DRIVER_FLAGS2_SAE_OFFLOAD_AP;
 }
 
 
@@ -814,12 +840,12 @@ static void wiphy_info_extended_capab(struct wpa_driver_nl80211_data *drv,
 	int rem = 0, i;
 	struct nlattr *tb1[NL80211_ATTR_MAX + 1], *attr;
 
-	if (!tb || drv->num_iface_ext_capa == NL80211_IFTYPE_MAX)
+	if (!tb || drv->num_iface_capa == NL80211_IFTYPE_MAX)
 		return;
 
 	nla_for_each_nested(attr, tb, rem) {
 		unsigned int len;
-		struct drv_nl80211_ext_capa *capa;
+		struct drv_nl80211_iface_capa *capa;
 
 		nla_parse(tb1, NL80211_ATTR_MAX, nla_data(attr),
 			  nla_len(attr), NULL);
@@ -829,7 +855,7 @@ static void wiphy_info_extended_capab(struct wpa_driver_nl80211_data *drv,
 		    !tb1[NL80211_ATTR_EXT_CAPA_MASK])
 			continue;
 
-		capa = &drv->iface_ext_capa[drv->num_iface_ext_capa];
+		capa = &drv->iface_capa[drv->num_iface_capa];
 		capa->iftype = nla_get_u32(tb1[NL80211_ATTR_IFTYPE]);
 		wpa_printf(MSG_DEBUG,
 			   "nl80211: Driver-advertised extended capabilities for interface type %s",
@@ -855,8 +881,20 @@ static void wiphy_info_extended_capab(struct wpa_driver_nl80211_data *drv,
 		wpa_hexdump(MSG_DEBUG, "nl80211: Extended capabilities mask",
 			    capa->ext_capa_mask, capa->ext_capa_len);
 
-		drv->num_iface_ext_capa++;
-		if (drv->num_iface_ext_capa == NL80211_IFTYPE_MAX)
+		if (tb1[NL80211_ATTR_EML_CAPABILITY] &&
+		    tb1[NL80211_ATTR_MLD_CAPA_AND_OPS]) {
+			capa->eml_capa =
+				nla_get_u16(tb1[NL80211_ATTR_EML_CAPABILITY]);
+			capa->mld_capa_and_ops =
+				nla_get_u16(tb1[NL80211_ATTR_MLD_CAPA_AND_OPS]);
+		}
+
+		wpa_printf(MSG_DEBUG,
+			   "nl80211: EML Capability: 0x%x MLD Capability: 0x%x",
+			   capa->eml_capa, capa->mld_capa_and_ops);
+
+		drv->num_iface_capa++;
+		if (drv->num_iface_capa == NL80211_IFTYPE_MAX)
 			break;
 	}
 
@@ -865,13 +903,13 @@ static void wiphy_info_extended_capab(struct wpa_driver_nl80211_data *drv,
 err:
 	/* Cleanup allocated memory on error */
 	for (i = 0; i < NL80211_IFTYPE_MAX; i++) {
-		os_free(drv->iface_ext_capa[i].ext_capa);
-		drv->iface_ext_capa[i].ext_capa = NULL;
-		os_free(drv->iface_ext_capa[i].ext_capa_mask);
-		drv->iface_ext_capa[i].ext_capa_mask = NULL;
-		drv->iface_ext_capa[i].ext_capa_len = 0;
+		os_free(drv->iface_capa[i].ext_capa);
+		drv->iface_capa[i].ext_capa = NULL;
+		os_free(drv->iface_capa[i].ext_capa_mask);
+		drv->iface_capa[i].ext_capa_mask = NULL;
+		drv->iface_capa[i].ext_capa_len = 0;
 	}
-	drv->num_iface_ext_capa = 0;
+	drv->num_iface_capa = 0;
 }
 
 
@@ -1167,7 +1205,7 @@ static int wpa_driver_nl80211_get_info(struct wpa_driver_nl80211_data *drv,
 		return -1;
 	}
 
-	if (send_and_recv_msgs(drv, msg, wiphy_info_handler, info, NULL, NULL))
+	if (send_and_recv_resp(drv, msg, wiphy_info_handler, info))
 		return -1;
 
 	if (info->auth_supported)
@@ -1276,8 +1314,7 @@ static void qca_nl80211_check_dfs_capa(struct wpa_driver_nl80211_data *drv)
 		return;
 	}
 
-	ret = send_and_recv_msgs(drv, msg, dfs_info_handler, &dfs_capability,
-				 NULL, NULL);
+	ret = send_and_recv_resp(drv, msg, dfs_info_handler, &dfs_capability);
 	if (!ret && dfs_capability)
 		drv->capa.flags |= WPA_DRIVER_FLAGS_DFS_OFFLOAD;
 }
@@ -1364,8 +1401,7 @@ static void qca_nl80211_get_features(struct wpa_driver_nl80211_data *drv)
 
 	os_memset(&info, 0, sizeof(info));
 	info.capa = &drv->capa;
-	ret = send_and_recv_msgs(drv, msg, features_info_handler, &info,
-				 NULL, NULL);
+	ret = send_and_recv_resp(drv, msg, features_info_handler, &info);
 	if (ret || !info.flags)
 		return;
 
@@ -1402,6 +1438,11 @@ static void qca_nl80211_get_features(struct wpa_driver_nl80211_data *drv)
 		    QCA_WLAN_VENDOR_FEATURE_PROT_RANGE_NEGO_AND_MEASURE_AP,
 		    &info))
 		drv->capa.flags2 |= WPA_DRIVER_FLAGS2_PROT_RANGE_NEG_AP;
+	if (check_feature(QCA_WLAN_VENDOR_FEATURE_AP_ALLOWED_FREQ_LIST,
+			  &info))
+		drv->qca_ap_allowed_freqs = 1;
+	if (check_feature(QCA_WLAN_VENDOR_FEATURE_HT_VHT_TWT_RESPONDER, &info))
+		drv->capa.flags2 |= WPA_DRIVER_FLAGS2_HT_VHT_TWT_RESPONDER;
 	os_free(info.flags);
 }
 
@@ -1545,9 +1586,10 @@ int wpa_driver_nl80211_capa(struct wpa_driver_nl80211_data *drv)
 #endif /* CONFIG_DRIVER_NL80211_QCA */
 
 	wpa_printf(MSG_DEBUG,
-		   "nl80211: key_mgmt=0x%x enc=0x%x auth=0x%x flags=0x%llx rrm_flags=0x%x probe_resp_offloads=0x%x max_stations=%u max_remain_on_chan=%u max_scan_ssids=%d",
+		   "nl80211: key_mgmt=0x%x enc=0x%x auth=0x%x flags=0x%llx flags2=0x%llx rrm_flags=0x%x probe_resp_offloads=0x%x max_stations=%u max_remain_on_chan=%u max_scan_ssids=%d",
 		   drv->capa.key_mgmt, drv->capa.enc, drv->capa.auth,
-		   (unsigned long long) drv->capa.flags, drv->capa.rrm_flags,
+		   (unsigned long long) drv->capa.flags,
+		   (unsigned long long) drv->capa.flags2, drv->capa.rrm_flags,
 		   drv->capa.probe_resp_offloads, drv->capa.max_stations,
 		   drv->capa.max_remain_on_chan, drv->capa.max_scan_ssids);
 	return 0;
@@ -2120,6 +2162,9 @@ wpa_driver_nl80211_postprocess_modes(struct hostapd_hw_modes *modes,
 	for (m = 0; m < *num_modes; m++) {
 		if (!modes[m].num_channels)
 			continue;
+
+		modes[m].is_6ghz = false;
+
 		if (modes[m].channels[0].freq < 2000) {
 			modes[m].num_channels = 0;
 			continue;
@@ -2131,10 +2176,14 @@ wpa_driver_nl80211_postprocess_modes(struct hostapd_hw_modes *modes,
 					break;
 				}
 			}
-		} else if (modes[m].channels[0].freq > 50000)
+		} else if (modes[m].channels[0].freq > 50000) {
 			modes[m].mode = HOSTAPD_MODE_IEEE80211AD;
-		else
+		} else if (is_6ghz_freq(modes[m].channels[0].freq)) {
 			modes[m].mode = HOSTAPD_MODE_IEEE80211A;
+			modes[m].is_6ghz = true;
+		} else {
+			modes[m].mode = HOSTAPD_MODE_IEEE80211A;
+		}
 	}
 
 	/* Remove unsupported bands */
@@ -2318,43 +2367,15 @@ static void nl80211_set_vht_mode(struct hostapd_hw_modes *mode, int start,
 
 	for (c = 0; c < mode->num_channels; c++) {
 		struct hostapd_channel_data *chan = &mode->channels[c];
-		if (chan->freq - 10 >= start && chan->freq + 70 <= end)
-			chan->flag |= HOSTAPD_CHAN_VHT_10_70;
 
-		if (chan->freq - 30 >= start && chan->freq + 50 <= end)
-			chan->flag |= HOSTAPD_CHAN_VHT_30_50;
+		if (chan->freq - 10 < start || chan->freq + 10 > end)
+			continue;
 
-		if (chan->freq - 50 >= start && chan->freq + 30 <= end)
-			chan->flag |= HOSTAPD_CHAN_VHT_50_30;
+		if (max_bw >= 80)
+			chan->flag |= HOSTAPD_CHAN_VHT_80MHZ_SUBCHANNEL;
 
-		if (chan->freq - 70 >= start && chan->freq + 10 <= end)
-			chan->flag |= HOSTAPD_CHAN_VHT_70_10;
-
-		if (max_bw >= 160) {
-			if (chan->freq - 10 >= start && chan->freq + 150 <= end)
-				chan->flag |= HOSTAPD_CHAN_VHT_10_150;
-
-			if (chan->freq - 30 >= start && chan->freq + 130 <= end)
-				chan->flag |= HOSTAPD_CHAN_VHT_30_130;
-
-			if (chan->freq - 50 >= start && chan->freq + 110 <= end)
-				chan->flag |= HOSTAPD_CHAN_VHT_50_110;
-
-			if (chan->freq - 70 >= start && chan->freq + 90 <= end)
-				chan->flag |= HOSTAPD_CHAN_VHT_70_90;
-
-			if (chan->freq - 90 >= start && chan->freq + 70 <= end)
-				chan->flag |= HOSTAPD_CHAN_VHT_90_70;
-
-			if (chan->freq - 110 >= start && chan->freq + 50 <= end)
-				chan->flag |= HOSTAPD_CHAN_VHT_110_50;
-
-			if (chan->freq - 130 >= start && chan->freq + 30 <= end)
-				chan->flag |= HOSTAPD_CHAN_VHT_130_30;
-
-			if (chan->freq - 150 >= start && chan->freq + 10 <= end)
-				chan->flag |= HOSTAPD_CHAN_VHT_150_10;
-		}
+		if (max_bw >= 160)
+			chan->flag |= HOSTAPD_CHAN_VHT_160MHZ_SUBCHANNEL;
 	}
 }
 
@@ -2386,6 +2407,57 @@ static void nl80211_reg_rule_vht(struct nlattr *tb[],
 			continue;
 
 		nl80211_set_vht_mode(&results->modes[m], start, end, max_bw);
+	}
+}
+
+
+static void nl80211_set_6ghz_mode(struct hostapd_hw_modes *mode, int start,
+				  int end, int max_bw)
+{
+	int c;
+
+	for (c = 0; c < mode->num_channels; c++) {
+		struct hostapd_channel_data *chan = &mode->channels[c];
+
+		if (chan->freq - 10 < start || chan->freq + 10 > end)
+			continue;
+
+		if (max_bw >= 80)
+			chan->flag |= HOSTAPD_CHAN_VHT_80MHZ_SUBCHANNEL;
+
+		if (max_bw >= 160)
+			chan->flag |= HOSTAPD_CHAN_VHT_160MHZ_SUBCHANNEL;
+
+		if (max_bw >= 320)
+			chan->flag |= HOSTAPD_CHAN_EHT_320MHZ_SUBCHANNEL;
+	}
+}
+
+
+static void nl80211_reg_rule_6ghz(struct nlattr *tb[],
+				 struct phy_info_arg *results)
+{
+	u32 start, end, max_bw;
+	u16 m;
+
+	if (!tb[NL80211_ATTR_FREQ_RANGE_START] ||
+	    !tb[NL80211_ATTR_FREQ_RANGE_END] ||
+	    !tb[NL80211_ATTR_FREQ_RANGE_MAX_BW])
+		return;
+
+	start = nla_get_u32(tb[NL80211_ATTR_FREQ_RANGE_START]) / 1000;
+	end = nla_get_u32(tb[NL80211_ATTR_FREQ_RANGE_END]) / 1000;
+	max_bw = nla_get_u32(tb[NL80211_ATTR_FREQ_RANGE_MAX_BW]) / 1000;
+
+	if (max_bw < 80)
+		return;
+
+	for (m = 0; m < *results->num_modes; m++) {
+		if (results->modes[m].num_channels == 0 ||
+		    !is_6ghz_freq(results->modes[m].channels[0].freq))
+			continue;
+
+		nl80211_set_6ghz_mode(&results->modes[m], start, end, max_bw);
 	}
 }
 
@@ -2508,6 +2580,13 @@ static int nl80211_get_reg(struct nl_msg *msg, void *arg)
 		nl80211_reg_rule_vht(tb_rule, results);
 	}
 
+	nla_for_each_nested(nl_rule, tb_msg[NL80211_ATTR_REG_RULES], rem_rule)
+	{
+		nla_parse(tb_rule, NL80211_FREQUENCY_ATTR_MAX,
+			  nla_data(nl_rule), nla_len(nl_rule), reg_policy);
+		nl80211_reg_rule_6ghz(tb_rule, results);
+	}
+
 	return NL_SKIP;
 }
 
@@ -2529,8 +2608,7 @@ static int nl80211_set_regulatory_flags(struct wpa_driver_nl80211_data *drv,
 		}
 	}
 
-	return send_and_recv_msgs(drv, msg, nl80211_get_reg, results,
-				  NULL, NULL);
+	return send_and_recv_resp(drv, msg, nl80211_get_reg, results);
 }
 
 
@@ -2570,9 +2648,10 @@ static void nl80211_dump_chan_list(struct wpa_driver_nl80211_data *drv,
 		for (j = 0; j < mode->num_channels; j++) {
 			struct hostapd_channel_data *chan = &mode->channels[j];
 
-			if (chan->freq >= 5925 && chan->freq <= 7125 &&
-			    !(chan->flag & HOSTAPD_CHAN_DISABLED))
+			if (is_6ghz_freq(chan->freq))
 				drv->uses_6ghz = true;
+			if (chan->freq >= 900 && chan->freq < 1000)
+				drv->uses_s1g = true;
 			res = os_snprintf(pos, end - pos, " %d%s%s%s",
 					  chan->freq,
 					  (chan->flag & HOSTAPD_CHAN_DISABLED) ?
@@ -2623,8 +2702,7 @@ nl80211_get_hw_feature_data(void *priv, u16 *num_modes, u16 *flags,
 		return NULL;
 	}
 
-	if (send_and_recv_msgs(drv, msg, phy_info_handler, &result,
-			       NULL, NULL) == 0) {
+	if (send_and_recv_resp(drv, msg, phy_info_handler, &result) == 0) {
 		struct hostapd_hw_modes *modes;
 
 		nl80211_set_regulatory_flags(drv, &result);

@@ -27,6 +27,7 @@ CFLAGS += -DCONFIG_DPP
 CFLAGS += -DCONFIG_SHA384
 CFLAGS += -DCONFIG_SHA512
 CFLAGS += -DCONFIG_PASN
+CFLAGS += -DCONFIG_WFA
 
 OBJS += ../src/common/ieee802_11_common.o
 OBJS += ../src/common/wpa_common.o

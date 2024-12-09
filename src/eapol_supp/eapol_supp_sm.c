@@ -1693,6 +1693,9 @@ void eapol_sm_notify_cached(struct eapol_sm *sm)
 	if (sm == NULL)
 		return;
 	wpa_printf(MSG_DEBUG, "EAPOL: PMKSA caching was used - skip EAPOL");
+#ifdef CONFIG_WFA
+	wpa_msg(sm->ctx->msg_ctx, MSG_INFO, "PMKID_MATCHED: eapol M1 and Assoc Req");
+#endif
 	sm->eapSuccess = true;
 	eap_notify_success(sm->eap);
 	eapol_sm_step(sm);
@@ -2136,9 +2139,15 @@ struct eapol_sm *eapol_sm_init(struct eapol_ctx *ctx)
 	sm->authPeriod = 30;
 
 	os_memset(&conf, 0, sizeof(conf));
+#ifndef CONFIG_OPENSC_ENGINE_PATH
 	conf.opensc_engine_path = ctx->opensc_engine_path;
+#endif /* CONFIG_OPENSC_ENGINE_PATH */
+#ifndef CONFIG_PKCS11_ENGINE_PATH
 	conf.pkcs11_engine_path = ctx->pkcs11_engine_path;
+#endif /* CONFIG_PKCS11_ENGINE_PATH */
+#ifndef CONFIG_PKCS11_MODULE_PATH
 	conf.pkcs11_module_path = ctx->pkcs11_module_path;
+#endif /* CONFIG_PKCS11_MODULE_PATH */
 	conf.openssl_ciphers = ctx->openssl_ciphers;
 	conf.wps = ctx->wps;
 	conf.cert_in_cb = ctx->cert_in_cb;

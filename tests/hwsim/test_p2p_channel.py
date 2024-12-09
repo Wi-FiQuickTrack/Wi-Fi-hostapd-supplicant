@@ -186,6 +186,7 @@ def test_p2p_channel_avoid(dev):
                                      timeout=10)
         if ev is None:
             raise Exception("No P2P-REMOVE-AND-REFORM-GROUP or AP-CSA-FINISHED event")
+        remove_group(dev[0], dev[1])
     finally:
         set_country("00")
         dev[0].request("DRIVER_EVENT AVOID_FREQUENCIES")
@@ -218,6 +219,7 @@ def test_p2p_channel_avoid2(dev):
         ev = dev[0].wait_group_event(["AP-CSA-FINISHED"], timeout=1)
         if ev is None:
             raise Exception("No AP-CSA-FINISHED event seen")
+        remove_group(dev[0], dev[1])
     finally:
         set_country("00")
         dev[0].request("DRIVER_EVENT AVOID_FREQUENCIES")
@@ -249,6 +251,7 @@ def test_p2p_channel_avoid3(dev):
         ev = dev[0].wait_group_event(["AP-CSA-FINISHED"], timeout=1)
         if ev is None:
             raise Exception("No AP-CSA-FINISHED event seen")
+        remove_group(dev[0], dev[1])
     finally:
         set_country("00")
         dev[0].request("DRIVER_EVENT AVOID_FREQUENCIES")
@@ -277,6 +280,7 @@ def test_p2p_channel_avoid4(dev):
         sig = dev[1].group_request("SIGNAL_POLL").splitlines()
         if "WIDTH=40 MHz" not in sig:
             raise Exception("Unexpected channel width: " + str(sig))
+        remove_group(dev[0], dev[1])
     finally:
         set_country("00")
         dev[0].request("DRIVER_EVENT AVOID_FREQUENCIES")
@@ -472,7 +476,8 @@ def test_go_neg_forced_freq_diff_than_bss_freq(dev, apdev):
         # GO and peer force the same freq, different than BSS freq,
         # wpas to become GO
         [i_res, r_res] = go_neg_pbc(i_dev=dev[1], i_intent=1, i_freq=5180,
-                                    r_dev=wpas, r_intent=14, r_freq=5180)
+                                    r_dev=wpas, r_intent=14, r_freq=5180,
+                                    timeout=60)
         check_grpform_results(i_res, r_res)
         if i_res['freq'] != "5180":
            raise Exception("P2P group formed on unexpected frequency: " + i_res['freq'])
@@ -486,7 +491,8 @@ def test_go_neg_forced_freq_diff_than_bss_freq(dev, apdev):
         # GO and peer force the same freq, different than BSS freq, wpas to
         # become client
         [i_res2, r_res2] = go_neg_pbc(i_dev=dev[1], i_intent=14, i_freq=2422,
-                                      r_dev=wpas, r_intent=1, r_freq=2422)
+                                      r_dev=wpas, r_intent=1, r_freq=2422,
+                                      timeout=60)
         check_grpform_results(i_res2, r_res2)
         if i_res2['freq'] != "2422":
            raise Exception("P2P group formed on unexpected frequency: " + i_res2['freq'])
@@ -1237,11 +1243,33 @@ def test_p2p_channel_vht80p80(dev):
 
 def test_p2p_channel_vht80p80_autogo(dev):
     """P2P autonomous GO and VHT 80+80 MHz channel"""
+    run_p2p_channel_vht80p80_autogo(dev)
+
+def test_p2p_channel_vht80p80_autogo_persistent(dev):
+    """P2P autonomous GO and VHT 80+80 MHz channel (persistent group)"""
+    run_p2p_channel_vht80p80_autogo(dev, persistent=True)
+
+def run_p2p_channel_vht80p80_autogo(dev, persistent=False):
     addr0 = dev[0].p2p_dev_addr()
 
     try:
         set_country("US", dev[0])
-        if "OK" not in dev[0].global_request("P2P_GROUP_ADD vht freq=5180 freq2=5775"):
+
+        if persistent:
+            res = dev[0].p2p_start_go(persistent=True)
+            dev[0].remove_group()
+
+            networks = dev[0].list_networks(p2p=True)
+            if len(networks) != 1:
+                raise Exception("Unexpected number of networks")
+            if "[P2P-PERSISTENT]" not in networks[0]['flags']:
+                raise Exception("Not the persistent group data")
+            id = networks[0]['id']
+
+        cmd = "P2P_GROUP_ADD vht freq=5180 freq2=5775"
+        if persistent:
+            cmd += " persistent=" + id
+        if "OK" not in dev[0].global_request(cmd):
             raise Exception("Could not start GO")
         ev = dev[0].wait_global_event(["P2P-GROUP-STARTED"], timeout=5)
         if ev is None:

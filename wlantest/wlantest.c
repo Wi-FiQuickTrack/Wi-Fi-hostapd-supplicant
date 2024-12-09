@@ -60,6 +60,9 @@ static void wlantest_init(struct wlantest *wt)
 	dl_list_init(&wt->pmk);
 	dl_list_init(&wt->ptk);
 	dl_list_init(&wt->wep);
+#ifdef CONFIG_WFA
+	wt->increase_pn_num = 1;
+#endif	
 }
 
 
@@ -372,7 +375,9 @@ int wlantest_relog(struct wlantest *wt)
 int main(int argc, char *argv[])
 {
 	int c, ret = 0;
-	const char *read_file = NULL;
+	const unsigned int MAX_READ_FILE = 20;
+	const char *read_file[MAX_READ_FILE];
+	unsigned int rf, num_read_file = 0;
 	const char *read_wired_file = NULL;
 	const char *ifname = NULL;
 	const char *ifname_wired = NULL;
@@ -390,10 +395,15 @@ int main(int argc, char *argv[])
 	wlantest_init(&wt);
 
 	for (;;) {
-		c = getopt(argc, argv, "cdef:Fhi:I:L:n:Np:P:qr:R:tT:w:W:");
+		c = getopt(argc, argv, "A:cdef:Fhi:I:L:n:Np:P:qr:R:tT:w:W:");
 		if (c < 0)
 			break;
 		switch (c) {
+#ifdef CONFIG_WFA
+		case 'A':
+			wt.increase_pn_num = atoi(optarg);
+			break;
+#endif
 		case 'c':
 			ctrl_iface = 1;
 			break;
@@ -442,7 +452,13 @@ int main(int argc, char *argv[])
 			wpa_debug_level++;
 			break;
 		case 'r':
-			read_file = optarg;
+			if (num_read_file == MAX_READ_FILE) {
+				wpa_printf(MSG_INFO,
+					   "Too many read files (-r) - ignored %s",
+					   optarg);
+				break;
+			}
+			read_file[num_read_file++] = optarg;
 			break;
 		case 'R':
 			read_wired_file = optarg;
@@ -473,7 +489,7 @@ int main(int argc, char *argv[])
 	}
 
 	if (ifname == NULL && ifname_wired == NULL &&
-	    read_file == NULL && read_wired_file == NULL) {
+	    num_read_file == 0 && read_wired_file == NULL) {
 		usage();
 		ret = 0;
 		goto deinit;
@@ -491,9 +507,20 @@ int main(int argc, char *argv[])
 	if ((wt.write_file && write_pcap_init(&wt, wt.write_file) < 0) ||
 	    (wt.pcapng_file && write_pcapng_init(&wt, wt.pcapng_file) < 0) ||
 	    (read_wired_file &&
-	     read_wired_cap_file(&wt, read_wired_file) < 0) ||
-	    (read_file && read_cap_file(&wt, read_file) < 0) ||
-	    (ifname && monitor_init(&wt, ifname) < 0) ||
+	     read_wired_cap_file(&wt, read_wired_file) < 0))
+	{
+		ret = -1;
+		goto deinit;
+	}
+
+	for (rf = 0; rf < num_read_file; rf++) {
+		if (read_cap_file(&wt, read_file[rf]) < 0) {
+			ret = -1;
+			goto deinit;
+		}
+	}
+
+	if ((ifname && monitor_init(&wt, ifname) < 0) ||
 	    (ifname_wired && monitor_init_wired(&wt, ifname_wired) < 0) ||
 	    (ctrl_iface && ctrl_init(&wt) < 0)) {
 		ret = -1;

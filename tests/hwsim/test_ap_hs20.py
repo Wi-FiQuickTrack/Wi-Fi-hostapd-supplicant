@@ -55,15 +55,19 @@ def hs20_ap_params(ssid="test-hs20"):
     params['anqp_3gpp_cell_net'] = "244,91"
     return params
 
-def check_auto_select(dev, bssid):
+def check_auto_select(dev, bssid, hapd=None):
     dev.scan_for_bss(bssid, freq="2412")
     dev.request("INTERWORKING_SELECT auto freq=2412")
     ev = dev.wait_connected(timeout=15)
     if bssid not in ev:
         raise Exception("Connected to incorrect network")
+    if hapd:
+        hapd.wait_sta()
     dev.request("REMOVE_NETWORK all")
     dev.wait_disconnected()
     dev.dump_monitor()
+    if hapd:
+        hapd.wait_sta_disconnect()
 
 def interworking_select(dev, bssid, type=None, no_match=False, freq=None):
     dev.dump_monitor()
@@ -498,6 +502,7 @@ def test_ap_hs20_select(dev, apdev):
     params = hs20_ap_params()
     params['hessid'] = bssid
     hostapd.add_ap(apdev[0], params)
+    dev[0].flush_scan_cache()
 
     dev[0].hs20_enable()
     id = dev[0].add_cred_values({'realm': "example.com", 'username': "test",
@@ -1380,7 +1385,7 @@ def test_ap_hs20_connect_no_full_match(dev, apdev):
     params = hs20_ap_params()
     params['hessid'] = bssid
     params['anqp_3gpp_cell_net'] = "555,444"
-    hostapd.add_ap(apdev[0], params)
+    hapd = hostapd.add_ap(apdev[0], params)
 
     dev[0].flush_scan_cache()
     dev[0].hs20_enable()
@@ -1400,8 +1405,12 @@ def test_ap_hs20_connect_no_full_match(dev, apdev):
     if "below_min_backhaul=1" not in ev:
         raise Exception("below_min_backhaul not reported")
     interworking_connect(dev[0], bssid, "TTLS")
+    # wait for sta to connect so it can actually disconnect later
+    hapd.wait_sta()
     dev[0].remove_cred(id)
     dev[0].wait_disconnected()
+    # wait for sta to disconnect so it can send GAS query
+    hapd.wait_event(["AP-STA-DISCONNECTED"], timeout=1)
 
     vals = {'imsi': "555444-333222111", 'eap': "SIM",
             'milenage': "5122250214c33e723a5dd523fc145fc0:981d464c7c52eb6e5036234984ad0bcf:000000000123",
@@ -1481,7 +1490,7 @@ def test_ap_hs20_gas_while_associated(dev, apdev):
     bssid = apdev[0]['bssid']
     params = hs20_ap_params()
     params['hessid'] = bssid
-    hostapd.add_ap(apdev[0], params)
+    hapd = hostapd.add_ap(apdev[0], params)
 
     dev[0].hs20_enable()
     id = dev[0].add_cred_values({'realm': "example.com",
@@ -1491,6 +1500,7 @@ def test_ap_hs20_gas_while_associated(dev, apdev):
                                  'domain': "example.com"})
     interworking_select(dev[0], bssid, "home", freq="2412")
     interworking_connect(dev[0], bssid, "TTLS")
+    hapd.wait_sta()
 
     logger.info("Verifying GAS query while associated")
     dev[0].request("FETCH_ANQP")
@@ -1505,7 +1515,7 @@ def test_ap_hs20_gas_with_another_ap_while_associated(dev, apdev):
     bssid = apdev[0]['bssid']
     params = hs20_ap_params()
     params['hessid'] = bssid
-    hostapd.add_ap(apdev[0], params)
+    hapd = hostapd.add_ap(apdev[0], params)
 
     bssid2 = apdev[1]['bssid']
     params = hs20_ap_params()
@@ -1521,6 +1531,7 @@ def test_ap_hs20_gas_with_another_ap_while_associated(dev, apdev):
                                  'domain': "example.com"})
     interworking_select(dev[0], bssid, "home", freq="2412")
     interworking_connect(dev[0], bssid, "TTLS")
+    hapd.wait_sta()
     dev[0].dump_monitor()
 
     logger.info("Verifying GAS query with same AP while associated")
@@ -1549,7 +1560,7 @@ def _test_ap_hs20_gas_while_associated_with_pmf(dev, apdev):
     bssid = apdev[0]['bssid']
     params = hs20_ap_params()
     params['hessid'] = bssid
-    hostapd.add_ap(apdev[0], params)
+    hapd = hostapd.add_ap(apdev[0], params)
 
     bssid2 = apdev[1]['bssid']
     params = hs20_ap_params()
@@ -1567,6 +1578,7 @@ def _test_ap_hs20_gas_while_associated_with_pmf(dev, apdev):
                                  'domain': "example.com"})
     interworking_select(dev[0], bssid, "home", freq="2412")
     interworking_connect(dev[0], bssid, "TTLS")
+    hapd.wait_sta()
 
     logger.info("Verifying GAS query while associated")
     dev[0].request("FETCH_ANQP")
@@ -1735,8 +1747,10 @@ def test_ap_hs20_disallow_aps(dev, apdev):
     if "FAIL" not in dev[0].request("INTERWORKING_CONNECT 00:11:22:33:44:55"):
         raise Exception("Invalid INTERWORKING_CONNECT not rejected")
 
-def policy_test(dev, ap, values, only_one=True):
+def policy_test(dev, ap, hapd, values, only_one=True):
     dev.dump_monitor()
+    if hapd is not None:
+        hapd.dump_monitor()
     if ap:
         logger.info("Verify network selection to AP " + ap['ifname'])
         bssid = ap['bssid']
@@ -1772,6 +1786,9 @@ def policy_test(dev, ap, values, only_one=True):
     if bssid and conn_bssid != bssid:
         raise Exception("bssid information points to incorrect BSS")
 
+    if hapd is not None:
+        hapd.wait_sta()
+
     dev.remove_cred(id)
     dev.dump_monitor()
     return events
@@ -1790,35 +1807,35 @@ def test_ap_hs20_prefer_home(dev, apdev):
     check_eap_capa(dev[0], "MSCHAPV2")
     params = hs20_ap_params()
     params['domain_name'] = "example.org"
-    hostapd.add_ap(apdev[0], params)
+    hapd0 = hostapd.add_ap(apdev[0], params)
 
     params = hs20_ap_params()
     params['ssid'] = "test-hs20-other"
     params['domain_name'] = "example.com"
-    hostapd.add_ap(apdev[1], params)
+    hapd1 = hostapd.add_ap(apdev[1], params)
 
     values = default_cred()
     values['domain'] = "example.com"
-    policy_test(dev[0], apdev[1], values, only_one=False)
+    policy_test(dev[0], apdev[1], hapd1, values, only_one=False)
     values['domain'] = "example.org"
-    policy_test(dev[0], apdev[0], values, only_one=False)
+    policy_test(dev[0], apdev[0], hapd0, values, only_one=False)
 
 def test_ap_hs20_req_home_ois(dev, apdev):
     """Hotspot 2.0 required roaming consortium"""
     check_eap_capa(dev[0], "MSCHAPV2")
     params = hs20_ap_params()
-    hostapd.add_ap(apdev[0], params)
+    hapd0 = hostapd.add_ap(apdev[0], params)
 
     params = hs20_ap_params()
     params['ssid'] = "test-hs20-other"
     params['roaming_consortium'] = ["223344"]
-    hostapd.add_ap(apdev[1], params)
+    hapd1 = hostapd.add_ap(apdev[1], params)
 
     values = default_cred()
     values['required_home_ois'] = ["223344"]
-    policy_test(dev[0], apdev[1], values)
+    policy_test(dev[0], apdev[1], hapd1, values)
     values['required_home_ois'] = ["112233"]
-    policy_test(dev[0], apdev[0], values)
+    policy_test(dev[0], apdev[0], hapd0, values)
 
     id = dev[0].add_cred()
     dev[0].set_cred_quoted(id, "required_home_ois", "112233")
@@ -1857,22 +1874,22 @@ def test_ap_hs20_excluded_ssid(dev, apdev):
     params = hs20_ap_params()
     params['roaming_consortium'] = ["223344"]
     params['anqp_3gpp_cell_net'] = "555,444"
-    hostapd.add_ap(apdev[0], params)
+    hapd0 = hostapd.add_ap(apdev[0], params)
 
     params = hs20_ap_params()
     params['ssid'] = "test-hs20-other"
     params['roaming_consortium'] = ["223344"]
     params['anqp_3gpp_cell_net'] = "555,444"
-    hostapd.add_ap(apdev[1], params)
+    hapd1 = hostapd.add_ap(apdev[1], params)
 
     values = default_cred()
     values['excluded_ssid'] = "test-hs20"
-    events = policy_test(dev[0], apdev[1], values)
+    events = policy_test(dev[0], apdev[1], hapd1, values)
     ev = [e for e in events if "INTERWORKING-BLACKLISTED " + apdev[0]['bssid'] in e]
     if len(ev) != 1:
         raise Exception("Excluded network not reported")
     values['excluded_ssid'] = "test-hs20-other"
-    events = policy_test(dev[0], apdev[0], values)
+    events = policy_test(dev[0], apdev[0], hapd0, values)
     ev = [e for e in events if "INTERWORKING-BLACKLISTED " + apdev[1]['bssid'] in e]
     if len(ev) != 1:
         raise Exception("Excluded network not reported")
@@ -1882,7 +1899,7 @@ def test_ap_hs20_excluded_ssid(dev, apdev):
     values['eap'] = "TTLS"
     values['phase2'] = "auth=MSCHAPV2"
     values['excluded_ssid'] = "test-hs20"
-    events = policy_test(dev[0], apdev[1], values)
+    events = policy_test(dev[0], apdev[1], hapd1, values)
     ev = [e for e in events if "INTERWORKING-BLACKLISTED " + apdev[0]['bssid'] in e]
     if len(ev) != 1:
         raise Exception("Excluded network not reported")
@@ -1890,7 +1907,7 @@ def test_ap_hs20_excluded_ssid(dev, apdev):
     values = {'imsi': "555444-333222111", 'eap': "SIM",
               'milenage': "5122250214c33e723a5dd523fc145fc0:981d464c7c52eb6e5036234984ad0bcf:000000000123",
               'excluded_ssid': "test-hs20"}
-    events = policy_test(dev[0], apdev[1], values)
+    events = policy_test(dev[0], apdev[1], hapd1, values)
     ev = [e for e in events if "INTERWORKING-BLACKLISTED " + apdev[0]['bssid'] in e]
     if len(ev) != 1:
         raise Exception("Excluded network not reported")
@@ -1989,43 +2006,43 @@ def test_ap_hs20_roaming_partner_preference(dev, apdev):
     check_eap_capa(dev[0], "MSCHAPV2")
     params = hs20_ap_params()
     params['domain_name'] = "roaming.example.org"
-    hostapd.add_ap(apdev[0], params)
+    hapd0 = hostapd.add_ap(apdev[0], params)
 
     params = hs20_ap_params()
     params['ssid'] = "test-hs20-other"
     params['domain_name'] = "roaming.example.net"
-    hostapd.add_ap(apdev[1], params)
+    hapd1 = hostapd.add_ap(apdev[1], params)
 
     logger.info("Verify default vs. specified preference")
     values = default_cred()
     values['roaming_partner'] = "roaming.example.net,1,127,*"
-    policy_test(dev[0], apdev[1], values, only_one=False)
+    policy_test(dev[0], apdev[1], hapd1, values, only_one=False)
     values['roaming_partner'] = "roaming.example.net,1,129,*"
-    policy_test(dev[0], apdev[0], values, only_one=False)
+    policy_test(dev[0], apdev[0], hapd0, values, only_one=False)
 
     logger.info("Verify partial FQDN match")
     values['roaming_partner'] = "example.net,0,0,*"
-    policy_test(dev[0], apdev[1], values, only_one=False)
+    policy_test(dev[0], apdev[1], hapd1, values, only_one=False)
     values['roaming_partner'] = "example.net,0,255,*"
-    policy_test(dev[0], apdev[0], values, only_one=False)
+    policy_test(dev[0], apdev[0], hapd0, values, only_one=False)
 
 def test_ap_hs20_max_bss_load(dev, apdev):
     """Hotspot 2.0 and maximum BSS load"""
     check_eap_capa(dev[0], "MSCHAPV2")
     params = hs20_ap_params()
     params['bss_load_test'] = "12:200:20000"
-    hostapd.add_ap(apdev[0], params)
+    hapd0 = hostapd.add_ap(apdev[0], params)
 
     params = hs20_ap_params()
     params['ssid'] = "test-hs20-other"
     params['bss_load_test'] = "5:20:10000"
-    hostapd.add_ap(apdev[1], params)
+    hapd1 = hostapd.add_ap(apdev[1], params)
 
     logger.info("Verify maximum BSS load constraint")
     values = default_cred()
     values['domain'] = "example.com"
     values['max_bss_load'] = "100"
-    events = policy_test(dev[0], apdev[1], values, only_one=False)
+    events = policy_test(dev[0], apdev[1], hapd1, values, only_one=False)
 
     ev = [e for e in events if "INTERWORKING-AP " + apdev[0]['bssid'] in e]
     if len(ev) != 1 or "over_max_bss_load=1" not in ev[0]:
@@ -2036,7 +2053,7 @@ def test_ap_hs20_max_bss_load(dev, apdev):
 
     logger.info("Verify maximum BSS load does not prevent connection")
     values['max_bss_load'] = "1"
-    events = policy_test(dev[0], None, values)
+    events = policy_test(dev[0], None, None, values)
 
     ev = [e for e in events if "INTERWORKING-AP " + apdev[0]['bssid'] in e]
     if len(ev) != 1 or "over_max_bss_load=1" not in ev[0]:
@@ -2054,13 +2071,13 @@ def test_ap_hs20_max_bss_load2(dev, apdev):
 
     params = hs20_ap_params()
     params['ssid'] = "test-hs20-other"
-    hostapd.add_ap(apdev[1], params)
+    hapd1 = hostapd.add_ap(apdev[1], params)
 
     logger.info("Verify maximum BSS load constraint with AP advertisement")
     values = default_cred()
     values['domain'] = "example.com"
     values['max_bss_load'] = "100"
-    events = policy_test(dev[0], apdev[1], values, only_one=False)
+    events = policy_test(dev[0], apdev[1], hapd1, values, only_one=False)
 
     ev = [e for e in events if "INTERWORKING-AP " + apdev[0]['bssid'] in e]
     if len(ev) != 1 or "over_max_bss_load=1" not in ev[0]:
@@ -2074,12 +2091,12 @@ def test_ap_hs20_max_bss_load_roaming(dev, apdev):
     check_eap_capa(dev[0], "MSCHAPV2")
     params = hs20_ap_params()
     params['bss_load_test'] = "12:200:20000"
-    hostapd.add_ap(apdev[0], params)
+    hapd0 = hostapd.add_ap(apdev[0], params)
 
     values = default_cred()
     values['domain'] = "roaming.example.com"
     values['max_bss_load'] = "100"
-    events = policy_test(dev[0], apdev[0], values, only_one=True)
+    events = policy_test(dev[0], apdev[0], hapd0, values, only_one=True)
     ev = [e for e in events if "INTERWORKING-AP " + apdev[0]['bssid'] in e]
     if len(ev) != 1:
         raise Exception("No INTERWORKING-AP event")
@@ -2243,7 +2260,7 @@ def test_ap_hs20_req_conn_capab(dev, apdev):
     check_eap_capa(dev[0], "MSCHAPV2")
     bssid = apdev[0]['bssid']
     params = hs20_ap_params()
-    hostapd.add_ap(apdev[0], params)
+    hapd = hostapd.add_ap(apdev[0], params)
 
     dev[0].hs20_enable()
     dev[0].scan_for_bss(bssid, freq="2412")
@@ -2259,7 +2276,7 @@ def test_ap_hs20_req_conn_capab(dev, apdev):
     check_conn_capab_selection(dev[0], "roaming", True)
 
     logger.info("Verify that req_conn_capab does not prevent connection if no other network is available")
-    check_auto_select(dev[0], bssid)
+    check_auto_select(dev[0], bssid, hapd=hapd)
 
     logger.info("Additional req_conn_capab checks")
 
@@ -2314,25 +2331,25 @@ def test_ap_hs20_req_conn_capab_and_roaming_partner_preference(dev, apdev):
     params = hs20_ap_params()
     params['domain_name'] = "roaming.example.org"
     params['hs20_conn_capab'] = ["1:0:2", "6:22:1", "17:5060:0", "50:0:1"]
-    hostapd.add_ap(apdev[0], params)
+    hapd = hostapd.add_ap(apdev[0], params)
 
     bssid2 = apdev[1]['bssid']
     params = hs20_ap_params(ssid="test-hs20-b")
     params['domain_name'] = "roaming.example.net"
-    hostapd.add_ap(apdev[1], params)
+    hapd2 = hostapd.add_ap(apdev[1], params)
 
     values = default_cred()
     values['roaming_partner'] = "roaming.example.net,1,127,*"
     id = dev[0].add_cred_values(values)
-    check_auto_select(dev[0], bssid2)
+    check_auto_select(dev[0], bssid2, hapd=hapd2)
 
     dev[0].set_cred(id, "req_conn_capab", "50")
-    check_auto_select(dev[0], bssid)
+    check_auto_select(dev[0], bssid, hapd=hapd)
 
     dev[0].remove_cred(id)
     id = dev[0].add_cred_values(values)
     dev[0].set_cred(id, "req_conn_capab", "51")
-    check_auto_select(dev[0], bssid2)
+    check_auto_select(dev[0], bssid2, hapd=hapd2)
 
 def check_bandwidth_selection(dev, type, below):
     dev.request("INTERWORKING_SELECT freq=2412")
@@ -2364,7 +2381,7 @@ def test_ap_hs20_min_bandwidth_home(dev, apdev):
     check_eap_capa(dev[0], "MSCHAPV2")
     bssid = apdev[0]['bssid']
     params = hs20_ap_params()
-    hostapd.add_ap(apdev[0], params)
+    hapd = hostapd.add_ap(apdev[0], params)
 
     dev[0].hs20_enable()
     dev[0].scan_for_bss(bssid, freq="2412")
@@ -2386,14 +2403,14 @@ def test_ap_hs20_min_bandwidth_home(dev, apdev):
     values = bw_cred(domain="example.com", dl_home=5491, ul_home=59)
     id = dev[0].add_cred_values(values)
     check_bandwidth_selection(dev[0], "home", True)
-    check_auto_select(dev[0], bssid)
+    check_auto_select(dev[0], bssid, hapd=hapd)
 
     bssid2 = apdev[1]['bssid']
     params = hs20_ap_params(ssid="test-hs20-b")
     params['hs20_wan_metrics'] = "01:8000:1000:1:1:3000"
-    hostapd.add_ap(apdev[1], params)
+    hapd2 = hostapd.add_ap(apdev[1], params)
 
-    check_auto_select(dev[0], bssid2)
+    check_auto_select(dev[0], bssid2, hapd=hapd2)
 
 def test_ap_hs20_min_bandwidth_home2(dev, apdev):
     """Hotspot 2.0 network selection with min bandwidth - special cases"""
@@ -2436,7 +2453,7 @@ def test_ap_hs20_min_bandwidth_home_hidden_ssid_in_scan_res(dev, apdev):
     hapd_global.remove(apdev[0]['ifname'])
 
     params = hs20_ap_params()
-    hostapd.add_ap(apdev[0], params)
+    hapd = hostapd.add_ap(apdev[0], params)
 
     dev[0].hs20_enable()
     dev[0].scan_for_bss(bssid, freq="2412")
@@ -2458,14 +2475,14 @@ def test_ap_hs20_min_bandwidth_home_hidden_ssid_in_scan_res(dev, apdev):
     values = bw_cred(domain="example.com", dl_home=5491, ul_home=59)
     id = dev[0].add_cred_values(values)
     check_bandwidth_selection(dev[0], "home", True)
-    check_auto_select(dev[0], bssid)
+    check_auto_select(dev[0], bssid, hapd=hapd)
 
     bssid2 = apdev[1]['bssid']
     params = hs20_ap_params(ssid="test-hs20-b")
     params['hs20_wan_metrics'] = "01:8000:1000:1:1:3000"
-    hostapd.add_ap(apdev[1], params)
+    hapd2 = hostapd.add_ap(apdev[1], params)
 
-    check_auto_select(dev[0], bssid2)
+    check_auto_select(dev[0], bssid2, hapd=hapd2)
 
     dev[0].flush_scan_cache()
 
@@ -2474,7 +2491,7 @@ def test_ap_hs20_min_bandwidth_roaming(dev, apdev):
     check_eap_capa(dev[0], "MSCHAPV2")
     bssid = apdev[0]['bssid']
     params = hs20_ap_params()
-    hostapd.add_ap(apdev[0], params)
+    hapd = hostapd.add_ap(apdev[0], params)
 
     dev[0].hs20_enable()
     dev[0].scan_for_bss(bssid, freq="2412")
@@ -2496,14 +2513,14 @@ def test_ap_hs20_min_bandwidth_roaming(dev, apdev):
     values = bw_cred(domain="example.org", dl_roaming=5491, ul_roaming=59)
     id = dev[0].add_cred_values(values)
     check_bandwidth_selection(dev[0], "roaming", True)
-    check_auto_select(dev[0], bssid)
+    check_auto_select(dev[0], bssid, hapd=hapd)
 
     bssid2 = apdev[1]['bssid']
     params = hs20_ap_params(ssid="test-hs20-b")
     params['hs20_wan_metrics'] = "01:8000:1000:1:1:3000"
-    hostapd.add_ap(apdev[1], params)
+    hapd2 = hostapd.add_ap(apdev[1], params)
 
-    check_auto_select(dev[0], bssid2)
+    check_auto_select(dev[0], bssid2, hapd=hapd2)
 
 def test_ap_hs20_min_bandwidth_and_roaming_partner_preference(dev, apdev):
     """Hotspot 2.0 and minimum bandwidth with roaming partner preference"""
@@ -2512,23 +2529,23 @@ def test_ap_hs20_min_bandwidth_and_roaming_partner_preference(dev, apdev):
     params = hs20_ap_params()
     params['domain_name'] = "roaming.example.org"
     params['hs20_wan_metrics'] = "01:8000:1000:1:1:3000"
-    hostapd.add_ap(apdev[0], params)
+    hapd = hostapd.add_ap(apdev[0], params)
 
     bssid2 = apdev[1]['bssid']
     params = hs20_ap_params(ssid="test-hs20-b")
     params['domain_name'] = "roaming.example.net"
-    hostapd.add_ap(apdev[1], params)
+    hapd2 = hostapd.add_ap(apdev[1], params)
 
     values = default_cred()
     values['roaming_partner'] = "roaming.example.net,1,127,*"
     id = dev[0].add_cred_values(values)
-    check_auto_select(dev[0], bssid2)
+    check_auto_select(dev[0], bssid2, hapd=hapd2)
 
     dev[0].set_cred(id, "min_dl_bandwidth_roaming", "6000")
-    check_auto_select(dev[0], bssid)
+    check_auto_select(dev[0], bssid, hapd=hapd)
 
     dev[0].set_cred(id, "min_dl_bandwidth_roaming", "10000")
-    check_auto_select(dev[0], bssid2)
+    check_auto_select(dev[0], bssid2, hapd=hapd2)
 
 def test_ap_hs20_min_bandwidth_no_wan_metrics(dev, apdev):
     """Hotspot 2.0 network selection with min bandwidth but no WAN Metrics"""
@@ -2751,6 +2768,7 @@ def _test_ap_hs20_remediation_required_ctrl(dev, apdev):
     interworking_select(dev[0], bssid, freq="2412")
     interworking_connect(dev[0], bssid, "TTLS")
 
+    hapd.wait_sta()
     hapd.request("HS20_WNM_NOTIF " + addr + " https://example.com/")
     ev = dev[0].wait_event(["HS20-SUBSCRIPTION-REMEDIATION"], timeout=5)
     if ev is None:
@@ -4749,7 +4767,7 @@ def get_permanent_neighbors(ifname):
     cmd = subprocess.Popen(['ip', 'nei'], stdout=subprocess.PIPE)
     res = cmd.stdout.read().decode()
     cmd.stdout.close()
-    return [line for line in res.splitlines() if "PERMANENT" in line and ifname in line]
+    return [line.strip() for line in res.splitlines() if "PERMANENT" in line and ifname in line]
 
 def get_bridge_macs(ifname):
     cmd = subprocess.Popen(['brctl', 'showmacs', ifname],
@@ -5459,16 +5477,17 @@ def run_proxyarp_errors(dev, apdev, params):
     with fail_test(hapd, 1, "x_snoop_mcast_to_ucast_convert_send"):
         if "OK" not in hapd.request("DATA_TEST_FRAME ifname=ap-br0 " + binascii.hexlify(pkt).decode()):
             raise Exception("DATA_TEST_FRAME failed")
-        wait_fail_trigger(dev[0], "GET_FAIL")
+        wait_fail_trigger(hapd, "GET_FAIL")
 
     with alloc_fail(hapd, 1, "sta_ip6addr_add"):
         src_ll_opt0 = b"\x01\x01" + binascii.unhexlify(addr0.replace(':', ''))
         pkt = build_ns(src_ll=addr0, ip_src="aaaa:bbbb:cccc::2",
                        ip_dst="ff02::1:ff00:2", target="aaaa:bbbb:cccc::2",
                        opt=src_ll_opt0)
+        hwsim_utils.sync_carrier(dev[0])
         if "OK" not in dev[0].request("DATA_TEST_FRAME " + binascii.hexlify(pkt).decode()):
             raise Exception("DATA_TEST_FRAME failed")
-        wait_fail_trigger(dev[0], "GET_ALLOC_FAIL")
+        wait_fail_trigger(hapd, "GET_ALLOC_FAIL")
 
 def test_ap_hs20_connect_deinit(dev, apdev):
     """Hotspot 2.0 connection interrupted with deinit"""
@@ -5739,6 +5758,7 @@ def test_ap_hs20_anqp_invalid_gas_response(dev, apdev):
     params['hessid'] = bssid
     hapd = hostapd.add_ap(apdev[0], params)
 
+    dev[0].flush_scan_cache()
     dev[0].scan_for_bss(bssid, freq="2412")
     hapd.set("ext_mgmt_frame_handling", "1")
 
@@ -5892,8 +5912,10 @@ def test_ap_hs20_set_profile_failures(dev, apdev):
     dev[0].request("NOTE Successful connection with cred->username including realm")
     dev[0].request("INTERWORKING_CONNECT " + bssid)
     dev[0].wait_connected()
+    hapd.wait_sta()
     dev[0].remove_cred(id)
     dev[0].wait_disconnected()
+    hapd.wait_sta_disconnect()
 
     id = dev[0].add_cred_values({'realm': "example.com",
                                  'domain': "example.com",
@@ -5940,8 +5962,10 @@ def test_ap_hs20_set_profile_failures(dev, apdev):
     dev[0].request("NOTE Successful connection with cred->realm not included")
     dev[0].request("INTERWORKING_CONNECT " + bssid)
     dev[0].wait_connected()
+    hapd.wait_sta()
     dev[0].remove_cred(id)
     dev[0].wait_disconnected()
+    hapd.wait_sta_disconnect()
 
     id = dev[0].add_cred_values({'home_ois': ["112233"],
                                  'domain': "example.com",
@@ -5994,7 +6018,7 @@ def test_ap_hs20_set_profile_failures(dev, apdev):
     interworking_select(dev[0], bssid, "home", freq=2412)
     dev[0].dump_monitor()
     dev[0].request("NOTE wpa_config_set(password)")
-    with alloc_fail(dev[0], 3, "wpa_config_set;interworking_set_eap_params"):
+    with alloc_fail(dev[0], 1, "wpa_config_parse_password;interworking_set_eap_params"):
         dev[0].request("INTERWORKING_CONNECT " + bssid)
         wait_fail_trigger(dev[0], "GET_ALLOC_FAIL")
     with alloc_fail(dev[0], 1, "interworking_set_hs20_params"):

@@ -504,7 +504,6 @@ class WpaSupplicant:
         self.dump_monitor()
         self.select_network(id)
         self.wait_connected(timeout=timeout)
-        self.dump_monitor()
 
     def get_status(self, extra=None):
         if extra:
@@ -798,7 +797,6 @@ class WpaSupplicant:
                 if expect_failure:
                     return None
                 raise Exception("Group formation timed out")
-        self.dump_monitor()
         return self.group_form_result(ev, expect_failure, go_neg_res)
 
     def p2p_go_neg_init(self, peer, pin, method, timeout=0, go_intent=None,
@@ -806,7 +804,7 @@ class WpaSupplicant:
                         persistent_id=None, freq=None, provdisc=False,
                         wait_group=True, freq2=None, max_oper_chwidth=None,
                         ht40=False, vht=False):
-        if not self.discover_peer(peer):
+        if not self.discover_peer(peer,timeout=timeout if timeout else 15):
             raise Exception("Peer " + peer + " not found")
         self.dump_monitor()
         if pin:
@@ -1070,7 +1068,7 @@ class WpaSupplicant:
         if tspecs:
             raise Exception("DELTS failed (still in tspec list)")
 
-    def connect(self, ssid=None, ssid2=None, **kwargs):
+    def connect(self, ssid=None, ssid2=None, timeout=None, **kwargs):
         logger.info("Connect STA " + self.ifname + " to AP")
         id = self.add_network()
         if ssid:
@@ -1099,7 +1097,7 @@ class WpaSupplicant:
                       "wep_tx_keyidx", "scan_freq", "freq_list", "eap",
                       "eapol_flags", "fragment_size", "scan_ssid", "auth_alg",
                       "wpa_ptk_rekey", "disable_ht", "disable_vht", "bssid",
-                      "disable_he",
+                      "disable_he", "disable_eht",
                       "disable_max_amsdu", "ampdu_factor", "ampdu_density",
                       "disable_ht40", "disable_sgi", "disable_ldpc",
                       "ht40_intolerant", "update_identifier", "mac_addr",
@@ -1116,10 +1114,19 @@ class WpaSupplicant:
                       "multi_ap_backhaul_sta", "rx_stbc", "tx_stbc",
                       "ft_eap_pmksa_caching", "beacon_prot",
                       "mac_value",
-                      "wpa_deny_ptk0_rekey"]
+                      "wpa_deny_ptk0_rekey",
+                      "max_idle",
+                      "ssid_protection",
+                      "enable_4addr_mode"]
         for field in not_quoted:
             if field in kwargs and kwargs[field]:
                 self.set_network(id, field, kwargs[field])
+
+        if timeout is None:
+            if "eap" in kwargs:
+                timeout=20
+            else:
+                timeout=15
 
         known_args = {"raw_psk", "password_hex", "peerkey", "okc", "ocsp",
                       "only_add_network", "wait_connect", "raw_identity"}
@@ -1145,17 +1152,14 @@ class WpaSupplicant:
         if "only_add_network" in kwargs and kwargs['only_add_network']:
             return id
         if "wait_connect" not in kwargs or kwargs['wait_connect']:
-            if "eap" in kwargs:
-                self.connect_network(id, timeout=20)
-            else:
-                self.connect_network(id, timeout=15)
+            self.connect_network(id, timeout=timeout)
         else:
             self.dump_monitor()
             self.select_network(id)
         return id
 
     def scan(self, type=None, freq=None, no_wait=False, only_new=False,
-             passive=False):
+             passive=False, timeout=15):
         if not no_wait:
             self.dump_monitor()
         if type:
@@ -1176,7 +1180,7 @@ class WpaSupplicant:
         if no_wait:
             return
         ev = self.wait_event(["CTRL-EVENT-SCAN-RESULTS",
-                              "CTRL-EVENT-SCAN-FAILED"], 15)
+                              "CTRL-EVENT-SCAN-FAILED"], timeout)
         if ev is None:
             raise Exception("Scan timed out")
         if "CTRL-EVENT-SCAN-FAILED" in ev:
@@ -1194,8 +1198,15 @@ class WpaSupplicant:
         raise Exception("Could not find BSS " + bssid + " in scan")
 
     def flush_scan_cache(self, freq=2417):
-        self.request("BSS_FLUSH 0")
-        self.scan(freq=freq, only_new=True)
+        for i in range(3):
+            self.request("BSS_FLUSH 0")
+            try:
+                self.scan(freq=freq, only_new=True)
+            except Exception as e:
+                if i < 2:
+                    logger.info("flush_scan_cache: Failed to start scan: " + str(e))
+                    self.request("ABORT_SCAN")
+                    time.sleep(0.1)
         res = self.request("SCAN_RESULTS")
         if len(res.splitlines()) > 1:
             logger.debug("Scan results remaining after first attempt to flush the results:\n" + res)
@@ -1382,6 +1393,9 @@ class WpaSupplicant:
         ev = self.wait_event(["MGMT-RX"], timeout=timeout)
         if ev is None:
             return None
+        return self.mgmt_rx_parse(ev)
+
+    def mgmt_rx_parse(self, ev):
         msg = {}
         items = ev.split(' ')
         field, val = items[1].split('=')
@@ -1544,6 +1558,16 @@ class WpaSupplicant:
             cmd += " role=" + role
         if "OK" not in self.request(cmd):
             raise Exception("Failed to start listen operation")
+        # Since DPP listen is a radio work, make sure it has started
+        # by the time we return and continue with the test, since it
+        # usually will send something this side should receive.
+        work_started = "dpp-listen@" + self.ifname + ":" + str(freq) + ":1"
+        for i in range(10):
+            if work_started in self.request("RADIO_WORK show"):
+                time.sleep(0.0005)
+                return
+            time.sleep(0.01)
+        raise Exception("Failed to start DPP listen work")
 
     def dpp_auth_init(self, peer=None, uri=None, conf=None, configurator=None,
                       extra=None, own=None, role=None, neg_freq=None,
@@ -1684,3 +1708,30 @@ class WpaSupplicant:
             vals['kdk'] = kdk
             return vals
         return None
+
+    def wait_sta(self, addr=None, timeout=2, wait_4way_hs=False):
+        ev = self.wait_group_event(["AP-STA-CONNECT"], timeout=timeout)
+        if ev is None:
+            ev = self.wait_event(["AP-STA-CONNECT"], timeout=timeout)
+            if ev is None:
+                raise Exception("AP did not report STA connection")
+        if addr and addr not in ev:
+            raise Exception("Unexpected STA address in connection event: " + ev)
+        if wait_4way_hs:
+            ev2 = self.wait_group_event(["EAPOL-4WAY-HS-COMPLETED"],
+                                        timeout=timeout)
+            if ev2 is None:
+                raise Exception("AP did not report 4-way handshake completion")
+            if addr and addr not in ev2:
+                raise Exception("Unexpected STA address in 4-way handshake completion event: " + ev2)
+        return ev
+
+    def wait_sta_disconnect(self, addr=None, timeout=2):
+        ev = self.wait_group_event(["AP-STA-DISCONNECT"], timeout=timeout)
+        if ev is None:
+            ev = self.wait_event(["AP-STA-CONNECT"], timeout=timeout)
+            if ev is None:
+                raise Exception("AP did not report STA disconnection")
+        if addr and addr not in ev:
+            raise Exception("Unexpected STA address in disconnection event: " + ev)
+        return ev
