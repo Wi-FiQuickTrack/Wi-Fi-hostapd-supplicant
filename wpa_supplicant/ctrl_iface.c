@@ -7699,6 +7699,11 @@ static int p2p_ctrl_set(struct wpa_supplicant *wpa_s, char *cmd)
 		wpa_s->p2p_use_11b_rates = atoi(param);
 		return 0;
 	}
+
+	if (os_strcmp(cmd, "disable_go_neg_resp") == 0) {
+		p2p_set_go_neg_resp(wpa_s->global->p2p, atoi(param));
+		return 0;
+	}
 #endif
 
 	wpa_printf(MSG_DEBUG, "CTRL_IFACE: Unknown P2P_SET field value '%s'",
@@ -7808,6 +7813,28 @@ static int p2p_ctrl_iface_p2p_lo_start(struct wpa_supplicant *wpa_s, char *cmd)
 	return wpas_p2p_lo_start(wpa_s, freq, period, interval, count);
 }
 
+
+#ifdef CONFIG_WFA
+static int p2p_ctrl_iface_p2p_send_dev_disc(struct wpa_supplicant *wpa_s, char *cmd)
+{
+	char *pos;
+	u8 peer[ETH_ALEN];
+
+	pos = cmd;
+	if (os_strncmp(pos, "peer=", 5) == 0) {
+		pos += 5;
+	} else {
+		return -1;
+	}
+	if (hwaddr_aton(pos, peer)) {
+		wpa_printf(MSG_DEBUG, "P2P: Invalid MAC address '%s'", pos);
+		return -1;
+	}
+
+	return p2p_trigger_dev_disc_req(wpa_s->global->p2p, peer);
+
+}
+#endif
 #endif /* CONFIG_P2P */
 
 
@@ -12903,6 +12930,11 @@ char * wpa_supplicant_ctrl_iface_process(struct wpa_supplicant *wpa_s,
 	} else if (os_strcmp(buf, "P2P_LO_STOP") == 0) {
 		if (wpas_p2p_lo_stop(wpa_s))
 			reply_len = -1;
+#ifdef CONFIG_WFA
+	} else if (os_strncmp(buf, "P2P_SEND_DEV_DISC ", 18) == 0) {
+		if (p2p_ctrl_iface_p2p_send_dev_disc(wpa_s, buf + 18))
+			reply_len = -1;
+#endif
 #endif /* CONFIG_P2P */
 #ifdef CONFIG_WIFI_DISPLAY
 	} else if (os_strncmp(buf, "WFD_SUBELEM_SET ", 16) == 0) {

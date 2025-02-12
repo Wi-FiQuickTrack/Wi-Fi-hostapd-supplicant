@@ -246,7 +246,12 @@ void p2p_process_dev_disc_resp(struct p2p_data *p2p, const u8 *sa,
 	status = *msg.status;
 	p2p_parse_free(&msg);
 
+#ifdef CONFIG_WFA
+	p2p_info(p2p, "Device Discoverability Response status %u from " MACSTR,
+		 status, MAC2STR(sa));
+#else
 	p2p_dbg(p2p, "Device Discoverability Response status %u", status);
+#endif
 
 	if (p2p->go_neg_peer == NULL ||
 	    !ether_addr_equal(p2p->pending_client_disc_addr,

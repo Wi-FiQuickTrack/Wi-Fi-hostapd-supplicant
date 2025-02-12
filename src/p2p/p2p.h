@@ -2437,4 +2437,8 @@ void set_p2p_allow_6ghz(struct p2p_data *p2p, bool value);
 int p2p_remove_6ghz_channels(struct weighted_pcl *pref_freq_list, int size);
 int p2p_channel_to_freq(int op_class, int channel);
 
+#ifdef CONFIG_WFA
+void p2p_set_go_neg_resp(struct p2p_data *p2p, int enabled);
+int p2p_trigger_dev_disc_req(struct p2p_data *p2p, const u8 *peer);
+#endif
 #endif /* P2P_H */

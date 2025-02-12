@@ -554,6 +554,9 @@ struct p2p_data {
 	bool p2p_6ghz_capable;
 	bool include_6ghz;
 	bool allow_6ghz;
+#ifdef CONFIG_WFA
+	bool disable_go_neg_resp;
+#endif
 };
 
 /**

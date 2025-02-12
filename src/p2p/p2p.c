@@ -1934,6 +1934,11 @@ static void p2p_rx_p2p_action(struct p2p_data *p2p, const u8 *sa,
 
 	switch (data[0]) {
 	case P2P_GO_NEG_REQ:
+#ifdef CONFIG_WFA
+		if (p2p->disable_go_neg_resp)
+			wpa_printf(MSG_INFO, "Drop GO NEG Req");
+		else
+#endif
 		p2p_process_go_neg_req(p2p, sa, data + 1, len - 1, rx_freq);
 		break;
 	case P2P_GO_NEG_RESP:
@@ -1950,6 +1955,11 @@ static void p2p_rx_p2p_action(struct p2p_data *p2p, const u8 *sa,
 		p2p_process_invitation_resp(p2p, sa, data + 1, len - 1);
 		break;
 	case P2P_PROV_DISC_REQ:
+#ifdef CONFIG_WFA
+		if (p2p->disable_go_neg_resp)
+			wpa_printf(MSG_INFO, "Drop Prov Disc Req");
+		else
+#endif
 		p2p_process_prov_disc_req(p2p, sa, data + 1, len - 1, rx_freq);
 		break;
 	case P2P_PROV_DISC_RESP:
@@ -4823,6 +4833,19 @@ void p2p_set_managed_oper(struct p2p_data *p2p, int enabled)
 }
 
 
+#ifdef CONFIG_WFA
+void p2p_set_go_neg_resp(struct p2p_data *p2p, int enabled)
+{
+	p2p->disable_go_neg_resp = enabled;
+	if (enabled) {
+		p2p_dbg(p2p, "Disable GO NEGO Response");
+	} else {
+		p2p_dbg(p2p, "Enable GO NEGO Repsonse");
+	}
+}
+#endif
+
+
 int p2p_config_get_random_social(struct p2p_config *p2p, u8 *op_class,
 				 u8 *op_channel,
 				 struct wpa_freq_range_list *avoid_list,
@@ -5724,3 +5747,21 @@ void set_p2p_allow_6ghz(struct p2p_data *p2p, bool value)
 {
 	p2p->allow_6ghz = value;
 }
+
+#ifdef CONFIG_WFA
+int p2p_trigger_dev_disc_req(struct p2p_data *p2p, const u8 *peer)
+{
+	struct p2p_device *p2p_dev = p2p_get_device(p2p, peer);
+
+	if (p2p_dev == NULL) {
+		wpa_printf(MSG_INFO, "Can not get p2p device");
+		return -1;
+	}
+	if (is_zero_ether_addr(p2p_dev->member_in_go_dev)) {
+		wpa_printf(MSG_INFO, "No GO Dev information");
+		return -1;
+	}
+
+	return p2p_send_dev_disc_req(p2p, p2p_dev);
+}
+#endif
