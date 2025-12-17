@@ -491,20 +491,33 @@ int hostapd_setup_sae_pt(struct hostapd_bss_config *conf)
 #ifdef CONFIG_SAE
 	struct hostapd_ssid *ssid = &conf->ssid;
 	struct sae_password_entry *pw;
+	int *groups = conf->sae_groups;
+	int default_groups[] = { 19, 0, 0 };
 
 	if ((conf->sae_pwe == SAE_PWE_HUNT_AND_PECK &&
 	     !hostapd_sae_pw_id_in_use(conf) &&
-	     !wpa_key_mgmt_sae_ext_key(conf->wpa_key_mgmt) &&
+	     !wpa_key_mgmt_sae_ext_key(conf->wpa_key_mgmt |
+				       conf->rsn_override_key_mgmt |
+				       conf->rsn_override_key_mgmt_2) &&
 	     !hostapd_sae_pk_in_use(conf)) ||
 	    conf->sae_pwe == SAE_PWE_FORCE_HUNT_AND_PECK ||
-	    !wpa_key_mgmt_sae(conf->wpa_key_mgmt))
+	    !wpa_key_mgmt_sae(conf->wpa_key_mgmt |
+			      conf->rsn_override_key_mgmt |
+			      conf->rsn_override_key_mgmt_2))
 		return 0; /* PT not needed */
+
+	if (!groups) {
+		groups = default_groups;
+		if (wpa_key_mgmt_sae_ext_key(conf->wpa_key_mgmt |
+					     conf->rsn_override_key_mgmt |
+					     conf->rsn_override_key_mgmt_2))
+			default_groups[1] = 20;
+	}
 
 	sae_deinit_pt(ssid->pt);
 	ssid->pt = NULL;
 	if (ssid->wpa_passphrase) {
-		ssid->pt = sae_derive_pt(conf->sae_groups, ssid->ssid,
-					 ssid->ssid_len,
+		ssid->pt = sae_derive_pt(groups, ssid->ssid, ssid->ssid_len,
 					 (const u8 *) ssid->wpa_passphrase,
 					 os_strlen(ssid->wpa_passphrase),
 					 NULL);
@@ -514,8 +527,7 @@ int hostapd_setup_sae_pt(struct hostapd_bss_config *conf)
 
 	for (pw = conf->sae_passwords; pw; pw = pw->next) {
 		sae_deinit_pt(pw->pt);
-		pw->pt = sae_derive_pt(conf->sae_groups, ssid->ssid,
-				       ssid->ssid_len,
+		pw->pt = sae_derive_pt(groups, ssid->ssid, ssid->ssid_len,
 				       (const u8 *) pw->password,
 				       os_strlen(pw->password),
 				       pw->identifier);
@@ -779,6 +791,8 @@ static void hostapd_config_free_sae_passwords(struct hostapd_bss_config *conf)
 #ifdef CONFIG_SAE_PK
 		sae_deinit_pk(tmp->pk);
 #endif /* CONFIG_SAE_PK */
+		os_free(tmp->success_mac);
+		os_free(tmp->fail_mac);
 		os_free(tmp);
 	}
 }
@@ -917,31 +931,6 @@ void hostapd_config_free_bss(struct hostapd_bss_config *conf)
 	os_free(conf->hs20_wan_metrics);
 	os_free(conf->hs20_connection_capability);
 	os_free(conf->hs20_operating_class);
-	os_free(conf->hs20_icons);
-	if (conf->hs20_osu_providers) {
-		for (i = 0; i < conf->hs20_osu_providers_count; i++) {
-			struct hs20_osu_provider *p;
-			size_t j;
-			p = &conf->hs20_osu_providers[i];
-			os_free(p->friendly_name);
-			os_free(p->server_uri);
-			os_free(p->method_list);
-			for (j = 0; j < p->icons_count; j++)
-				os_free(p->icons[j]);
-			os_free(p->icons);
-			os_free(p->osu_nai);
-			os_free(p->osu_nai2);
-			os_free(p->service_desc);
-		}
-		os_free(conf->hs20_osu_providers);
-	}
-	if (conf->hs20_operator_icon) {
-		for (i = 0; i < conf->hs20_operator_icon_count; i++)
-			os_free(conf->hs20_operator_icon[i]);
-		os_free(conf->hs20_operator_icon);
-	}
-	os_free(conf->subscr_remediation_url);
-	os_free(conf->hs20_sim_provisioning_url);
 	os_free(conf->t_c_filename);
 	os_free(conf->t_c_server_url);
 #endif /* CONFIG_HS20 */
@@ -960,6 +949,11 @@ void hostapd_config_free_bss(struct hostapd_bss_config *conf)
 
 #ifdef CONFIG_TESTING_OPTIONS
 	wpabuf_free(conf->own_ie_override);
+	wpabuf_free(conf->rsne_override);
+	wpabuf_free(conf->rsnoe_override);
+	wpabuf_free(conf->rsno2e_override);
+	wpabuf_free(conf->rsnxe_override);
+	wpabuf_free(conf->rsnxoe_override);
 	wpabuf_free(conf->sae_commit_override);
 	wpabuf_free(conf->rsne_override_eapol);
 	wpabuf_free(conf->rsnxe_override_eapol);
@@ -1204,7 +1198,7 @@ static bool hostapd_sae_pk_password_without_pk(struct hostapd_bss_config *bss)
 #endif /* CONFIG_SAE_PK */
 
 
-static bool hostapd_config_check_bss_6g(struct hostapd_bss_config *bss)
+bool hostapd_config_check_bss_6g(struct hostapd_bss_config *bss)
 {
 #ifdef CONFIG_TESTING_OPTIONS
 	if (bss->skip_6g_bss_security_check) {
@@ -1506,6 +1500,13 @@ static int hostapd_config_check_bss(struct hostapd_bss_config *bss,
 		wpa_printf(MSG_INFO,
 			   "Disabling IEEE 802.11be as IEEE 802.11ax is disabled for this BSS");
 	}
+
+	if (full_config && conf->ieee80211be && !bss->disable_11be &&
+	    !bss->beacon_prot && ap_pmf_enabled(bss)) {
+		bss->beacon_prot = 1;
+		wpa_printf(MSG_INFO,
+			   "Enabling beacon protection as IEEE 802.11be is enabled for this BSS");
+	}
 #endif /* CONFIG_IEEE80211BE */
 
 	if (full_config && bss->ignore_broadcast_ssid && conf->mbssid) {
@@ -1513,6 +1514,13 @@ static int hostapd_config_check_bss(struct hostapd_bss_config *bss,
 			   "Hidden SSID is not suppored when MBSSID is enabled");
 		return -1;
 	}
+
+	/* Do not advertise SPP A-MSDU support if not using CCMP/GCMP */
+	if (full_config && bss->spp_amsdu &&
+	    !(bss->wpa &&
+	      bss->rsn_pairwise & (WPA_CIPHER_CCMP_256 | WPA_CIPHER_CCMP |
+				   WPA_CIPHER_GCMP_256 | WPA_CIPHER_GCMP)))
+		bss->spp_amsdu = false;
 
 	return 0;
 }
@@ -1680,11 +1688,6 @@ void hostapd_set_security_params(struct hostapd_bss_config *bss,
 		if (full_config)
 			bss->wpa_key_mgmt = WPA_KEY_MGMT_NONE;
 #endif /* CONFIG_WEP */
-	} else if (bss->osen) {
-		bss->ssid.security_policy = SECURITY_OSEN;
-		bss->wpa_group = WPA_CIPHER_CCMP;
-		bss->wpa_pairwise = 0;
-		bss->rsn_pairwise = WPA_CIPHER_CCMP;
 	} else {
 		bss->ssid.security_policy = SECURITY_PLAINTEXT;
 		if (full_config) {

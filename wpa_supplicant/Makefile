@@ -152,7 +152,7 @@ LIBCTRLSO += ../src/utils/trace.c
 LDFLAGS += -rdynamic
 CFLAGS += -funwind-tables
 ifdef CONFIG_WPA_TRACE_BFD
-CFLAGS += -DPACKAGE="wpa_supplicant" -DWPA_TRACE_BFD
+CFLAGS += -DPACKAGE="wpa_supplicant" -DWPA_TRACE_BFD -fno-inline -fno-optimize-sibling-calls
 LIBS += -lbfd -ldl -liberty -lz
 LIBS_p += -lbfd -ldl -liberty -lz
 LIBS_c += -lbfd -ldl -liberty -lz
@@ -321,6 +321,7 @@ endif
 ifdef CONFIG_NAN_USD
 OBJS += ../src/common/nan_de.o
 OBJS += nan_usd.o
+NEED_OFFCHANNEL=y
 CFLAGS += -DCONFIG_NAN_USD
 endif
 
@@ -760,7 +761,7 @@ endif
 
 ifdef CONFIG_EAP_TEAP
 # EAP-TEAP
-SRC_EAP_TEAP = ../src/eap_peer/eap_teap.c ../src/eap_peer/eap_teap_pac.c
+SRC_EAP_TEAP = ../src/eap_peer/eap_teap.c
 SRC_EAP_TEAP += ../src/eap_common/eap_teap_common.c
 ifeq ($(CONFIG_EAP_TEAP), dyn)
 CFLAGS += -DEAP_TEAP_DYNAMIC
@@ -828,7 +829,9 @@ OBJS += ../src/eap_peer/eap_pwd.o ../src/eap_common/eap_pwd_common.o
 CONFIG_IEEE8021X_EAPOL=y
 NEED_ECC=y
 NEED_DRAGONFLY=y
+ifndef CONFIG_FIPS
 MS_FUNCS=y
+endif
 endif
 
 ifdef CONFIG_EAP_EKE
@@ -1190,6 +1193,7 @@ TLS_FUNCS=y
 endif
 
 ifeq ($(CONFIG_TLS), wolfssl)
+CFLAGS += -DCRYPTO_RSA_OAEP_SHA256
 ifdef TLS_FUNCS
 CFLAGS += -DWOLFSSL_DER_LOAD
 OBJS += ../src/crypto/tls_wolfssl.o

@@ -14,7 +14,9 @@
 #include "common/ieee802_11_defs.h"
 #include "wpa_i.h"
 #include "wpa_ie.h"
-
+#ifdef CONFIG_WFA
+#include "crypto/random.h"
+#endif
 
 /**
  * wpa_parse_wpa_ie - Parse WPA/RSN IE
@@ -31,10 +33,14 @@ int wpa_parse_wpa_ie(const u8 *wpa_ie, size_t wpa_ie_len,
 	if (wpa_ie_len >= 1 && wpa_ie[0] == WLAN_EID_RSN)
 		return wpa_parse_wpa_ie_rsn(wpa_ie, wpa_ie_len, data);
 	if (wpa_ie_len >= 6 && wpa_ie[0] == WLAN_EID_VENDOR_SPECIFIC &&
-	    wpa_ie[1] >= 4 && WPA_GET_BE32(&wpa_ie[2]) == OSEN_IE_VENDOR_TYPE)
+	    wpa_ie[1] >= 4 &&
+	    WPA_GET_BE32(&wpa_ie[2]) == RSNE_OVERRIDE_IE_VENDOR_TYPE)
 		return wpa_parse_wpa_ie_rsn(wpa_ie, wpa_ie_len, data);
-	else
-		return wpa_parse_wpa_ie_wpa(wpa_ie, wpa_ie_len, data);
+	if (wpa_ie_len >= 6 && wpa_ie[0] == WLAN_EID_VENDOR_SPECIFIC &&
+	    wpa_ie[1] >= 4 &&
+	    WPA_GET_BE32(&wpa_ie[2]) == RSNE_OVERRIDE_2_IE_VENDOR_TYPE)
+		return wpa_parse_wpa_ie_rsn(wpa_ie, wpa_ie_len, data);
+	return wpa_parse_wpa_ie_wpa(wpa_ie, wpa_ie_len, data);
 }
 
 
@@ -134,14 +140,27 @@ static int wpa_gen_wpa_ie_rsn(u8 *rsn_ie, size_t rsn_ie_len,
 	u8 *pos;
 	struct rsn_ie_hdr *hdr;
 	u32 suite;
-
-	if (rsn_ie_len < sizeof(*hdr) + RSN_SELECTOR_LEN +
-	    2 + RSN_SELECTOR_LEN + 2 + RSN_SELECTOR_LEN + 2 +
-	    (sm->cur_pmksa ? 2 + PMKID_LEN : 0)) {
-		wpa_printf(MSG_DEBUG, "RSN: Too short IE buffer (%lu bytes)",
-			   (unsigned long) rsn_ie_len);
-		return -1;
+#ifdef CONFIG_WFA
+	if (sm->random_pmkid > 0) {
+		if (rsn_ie_len < sizeof(*hdr) + RSN_SELECTOR_LEN +
+			2 + RSN_SELECTOR_LEN + 2 + RSN_SELECTOR_LEN + 2 +
+			sm->random_pmkid * PMKID_LEN) {
+			wpa_printf(MSG_DEBUG, "RSN: Too short IE buffer (%lu bytes)",
+				(unsigned long) rsn_ie_len);
+			return -1;
+		}
+	} else {
+#endif
+		if (rsn_ie_len < sizeof(*hdr) + RSN_SELECTOR_LEN +
+			2 + RSN_SELECTOR_LEN + 2 + RSN_SELECTOR_LEN + 2 +
+			(sm->cur_pmksa ? 2 + PMKID_LEN : 0)) {
+			wpa_printf(MSG_DEBUG, "RSN: Too short IE buffer (%lu bytes)",
+				(unsigned long) rsn_ie_len);
+			return -1;
+		}
+#ifdef CONFIG_WFA
 	}
+#endif
 
 	hdr = (struct rsn_ie_hdr *) rsn_ie;
 	hdr->elem_id = WLAN_EID_RSN;
@@ -226,10 +245,6 @@ static int wpa_gen_wpa_ie_rsn(u8 *rsn_ie, size_t rsn_ie_len,
 	} else if (key_mgmt & WPA_KEY_MGMT_DPP) {
 		RSN_SELECTOR_PUT(pos, RSN_AUTH_KEY_MGMT_DPP);
 #endif /* CONFIG_DPP */
-#ifdef CONFIG_HS20
-	} else if (key_mgmt & WPA_KEY_MGMT_OSEN) {
-		RSN_SELECTOR_PUT(pos, RSN_AUTH_KEY_MGMT_OSEN);
-#endif /* CONFIG_HS20 */
 #ifdef CONFIG_SHA384
 	} else if (key_mgmt == WPA_KEY_MGMT_IEEE8021X_SHA384) {
 		RSN_SELECTOR_PUT(pos, RSN_AUTH_KEY_MGMT_802_1X_SHA384);
@@ -245,17 +260,39 @@ static int wpa_gen_wpa_ie_rsn(u8 *rsn_ie, size_t rsn_ie_len,
 	WPA_PUT_LE16(pos, rsn_supp_capab(sm));
 	pos += 2;
 
-	if (sm->cur_pmksa) {
+#ifdef CONFIG_WFA
+	if (sm->random_pmkid > 0) {
+		u8 tmp_pmkid[PMKID_LEN];
+
 		/* PMKID Count (2 octets, little endian) */
-		*pos++ = 1;
+		*pos++ = sm->random_pmkid;
 		*pos++ = 0;
 		/* PMKID */
-		os_memcpy(pos, sm->cur_pmksa->pmkid, PMKID_LEN);
-		pos += PMKID_LEN;
+		for (int i = 0; i < sm->random_pmkid; i++) {
+			random_get_bytes(&tmp_pmkid, PMKID_LEN);
+			os_memcpy(pos, &tmp_pmkid, PMKID_LEN);
+			pos += PMKID_LEN;
+		}
+	} else {
+#endif
+		if (sm->cur_pmksa) {
+			/* PMKID Count (2 octets, little endian) */
+			*pos++ = 1;
+			*pos++ = 0;
+			/* PMKID */
+			os_memcpy(pos, sm->cur_pmksa->pmkid, PMKID_LEN);
+			pos += PMKID_LEN;
+		}
+#ifdef CONFIG_WFA
 	}
+#endif
 
 	if (wpa_cipher_valid_mgmt_group(mgmt_group_cipher)) {
-		if (!sm->cur_pmksa) {
+		if (!sm->cur_pmksa 
+#ifdef CONFIG_WFA
+			&& !sm->random_pmkid
+#endif
+		) {
 			/* PMKID Count */
 			WPA_PUT_LE16(pos, 0);
 			pos += 2;
@@ -275,64 +312,6 @@ static int wpa_gen_wpa_ie_rsn(u8 *rsn_ie, size_t rsn_ie_len,
 }
 
 
-#ifdef CONFIG_HS20
-static int wpa_gen_wpa_ie_osen(u8 *wpa_ie, size_t wpa_ie_len,
-			       int pairwise_cipher, int group_cipher,
-			       int key_mgmt)
-{
-	u8 *pos, *len;
-	u32 suite;
-
-	if (wpa_ie_len < 2 + 4 + RSN_SELECTOR_LEN +
-	    2 + RSN_SELECTOR_LEN + 2 + RSN_SELECTOR_LEN)
-		return -1;
-
-	pos = wpa_ie;
-	*pos++ = WLAN_EID_VENDOR_SPECIFIC;
-	len = pos++; /* to be filled */
-	WPA_PUT_BE24(pos, OUI_WFA);
-	pos += 3;
-	*pos++ = HS20_OSEN_OUI_TYPE;
-
-	/* Group Data Cipher Suite */
-	suite = wpa_cipher_to_suite(WPA_PROTO_RSN, group_cipher);
-	if (suite == 0) {
-		wpa_printf(MSG_WARNING, "Invalid group cipher (%d).",
-			   group_cipher);
-		return -1;
-	}
-	RSN_SELECTOR_PUT(pos, suite);
-	pos += RSN_SELECTOR_LEN;
-
-	/* Pairwise Cipher Suite Count and List */
-	WPA_PUT_LE16(pos, 1);
-	pos += 2;
-	suite = wpa_cipher_to_suite(WPA_PROTO_RSN, pairwise_cipher);
-	if (suite == 0 ||
-	    (!wpa_cipher_valid_pairwise(pairwise_cipher) &&
-	     pairwise_cipher != WPA_CIPHER_NONE)) {
-		wpa_printf(MSG_WARNING, "Invalid pairwise cipher (%d).",
-			   pairwise_cipher);
-		return -1;
-	}
-	RSN_SELECTOR_PUT(pos, suite);
-	pos += RSN_SELECTOR_LEN;
-
-	/* AKM Suite Count and List */
-	WPA_PUT_LE16(pos, 1);
-	pos += 2;
-	RSN_SELECTOR_PUT(pos, RSN_AUTH_KEY_MGMT_OSEN);
-	pos += RSN_SELECTOR_LEN;
-
-	*len = pos - len - 1;
-
-	WPA_ASSERT((size_t) (pos - wpa_ie) <= wpa_ie_len);
-
-	return pos - wpa_ie;
-}
-#endif /* CONFIG_HS20 */
-
-
 /**
  * wpa_gen_wpa_ie - Generate WPA/RSN IE based on current security policy
  * @sm: Pointer to WPA state machine data from wpa_sm_init()
@@ -348,13 +327,6 @@ int wpa_gen_wpa_ie(struct wpa_sm *sm, u8 *wpa_ie, size_t wpa_ie_len)
 					  sm->group_cipher,
 					  sm->key_mgmt, sm->mgmt_group_cipher,
 					  sm);
-#ifdef CONFIG_HS20
-	else if (sm->proto == WPA_PROTO_OSEN)
-		return wpa_gen_wpa_ie_osen(wpa_ie, wpa_ie_len,
-					   sm->pairwise_cipher,
-					   sm->group_cipher,
-					   sm->key_mgmt);
-#endif /* CONFIG_HS20 */
 	else
 		return wpa_gen_wpa_ie_wpa(wpa_ie, wpa_ie_len,
 					  sm->pairwise_cipher,
@@ -387,6 +359,8 @@ int wpa_gen_rsnxe(struct wpa_sm *sm, u8 *rsnxe, size_t rsnxe_len)
 		capab |= BIT(WLAN_RSNX_CAPAB_URNM_MFPR);
 	if (sm->ssid_protection)
 		capab |= BIT(WLAN_RSNX_CAPAB_SSID_PROTECTION);
+	if (sm->spp_amsdu)
+		capab |= BIT(WLAN_RSNX_CAPAB_SPP_A_MSDU);
 
 	if (!capab)
 		return 0; /* no supported extended RSN capabilities */

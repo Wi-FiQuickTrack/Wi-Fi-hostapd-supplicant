@@ -63,7 +63,7 @@ u8 * hostapd_eid_ht_operation(struct hostapd_data *hapd, u8 *eid);
 u8 * hostapd_eid_vht_capabilities(struct hostapd_data *hapd, u8 *eid, u32 nsts);
 u8 * hostapd_eid_vht_operation(struct hostapd_data *hapd, u8 *eid);
 u8 * hostapd_eid_vendor_vht(struct hostapd_data *hapd, u8 *eid);
-u8 * hostapd_eid_wb_chsw_wrapper(struct hostapd_data *hapd, u8 *eid);
+u8 * hostapd_eid_chsw_wrapper(struct hostapd_data *hapd, u8 *eid);
 u8 * hostapd_eid_txpower_envelope(struct hostapd_data *hapd, u8 *eid);
 u8 * hostapd_eid_he_capab(struct hostapd_data *hapd, u8 *eid,
 			  enum ieee80211_op_mode opmode);
@@ -134,6 +134,11 @@ u16 copy_sta_he_6ghz_capab(struct hostapd_data *hapd, struct sta_info *sta,
 int hostapd_get_he_twt_responder(struct hostapd_data *hapd,
 				 enum ieee80211_op_mode mode);
 bool hostapd_get_ht_vht_twt_responder(struct hostapd_data *hapd);
+void hostapd_wfa_capab(struct hostapd_data *hapd, struct sta_info *sta,
+		       const u8 *pos, const u8 *end);
+#ifdef CONFIG_WFA
+u8 * hostapd_wfa_element_extend(u8 *pos, u8 *len_pos);
+#endif
 u8 * hostapd_eid_cca(struct hostapd_data *hapd, u8 *eid);
 void hostapd_tx_status(struct hostapd_data *hapd, const u8 *addr,
 		       const u8 *buf, size_t len, int ack);
@@ -267,5 +272,12 @@ int hostapd_process_assoc_ml_info(struct hostapd_data *hapd,
 				  const u8 *ies, size_t ies_len,
 				  bool reassoc, int tx_link_status,
 				  bool offload);
-
+#ifdef CONFIG_WFA
+void hostapd_wfa_eid_eht_capa_res_bits(u8 *field_pos);
+void hostapd_wfa_eid_eht_capa_unt_bits(u8 *field_pos);
+void hostapd_wfa_eid_eht_oper_res_bits(u8 *field_pos);
+void hostapd_wfa_eid_eht_oper_unt_bits(u8 *field_pos);
+void hostapd_wfa_eid_ml_res_bits(u8 *base, u8 *sta_ctrl[]);
+void hostapd_wfa_eid_he_capa_res_bits(u8 *field_pos);
+#endif
 #endif /* IEEE802_11_H */

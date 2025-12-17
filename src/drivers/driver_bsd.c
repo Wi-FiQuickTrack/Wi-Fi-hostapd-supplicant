@@ -325,6 +325,9 @@ bsd_set_key(void *priv, struct wpa_driver_set_key_params *params)
 	const u8 *key = params->key;
 	size_t key_len = params->key_len;
 
+	if (params->key_flag & KEY_FLAG_NEXT)
+		return -1;
+
 	wpa_printf(MSG_DEBUG, "%s: alg=%d addr=%p key_idx=%d set_tx=%d "
 		   "seq_len=%zu key_len=%zu", __func__, alg, addr, key_idx,
 		   set_tx, seq_len, key_len);
@@ -998,7 +1001,8 @@ handle_read(void *ctx, const u8 *src_addr, const u8 *buf, size_t len)
 }
 
 static void *
-bsd_init(struct hostapd_data *hapd, struct wpa_init_params *params)
+bsd_init(struct hostapd_data *hapd, struct wpa_init_params *params,
+	 enum wpa_p2p_mode p2p_mode)
 {
 	struct bsd_driver_data *drv;
 

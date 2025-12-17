@@ -65,6 +65,8 @@ struct ieee802_11_elems {
 	const u8 *vendor_ht_cap;
 	const u8 *vendor_vht;
 	const u8 *p2p;
+	const u8 *p2p2_ie;
+	const u8 *pasn_encrypted_data;
 	const u8 *wfd;
 	const u8 *link_id;
 	const u8 *interworking;
@@ -73,7 +75,6 @@ struct ieee802_11_elems {
 	const u8 *ext_capab;
 	const u8 *bss_max_idle_period;
 	const u8 *ssid_list;
-	const u8 *osen;
 	const u8 *mbo;
 	const u8 *ampe;
 	const u8 *mic;
@@ -116,6 +117,11 @@ struct ieee802_11_elems {
 	const u8 *prior_access_mle;
 	const u8 *mbssid_known_bss;
 	const u8 *mbssid;
+	const u8 *rsne_override;
+	const u8 *rsne_override_2;
+	const u8 *rsnxe_override;
+	const u8 *rsn_selection;
+	const u8 *wfa_capab;
 
 	u8 ssid_len;
 	u8 supp_rates_len;
@@ -136,13 +142,14 @@ struct ieee802_11_elems {
 	u8 vendor_ht_cap_len;
 	u8 vendor_vht_len;
 	u8 p2p_len;
+	u8 p2p2_ie_len;
+	u8 pasn_encrypted_data_len;
 	u8 wfd_len;
 	u8 interworking_len;
 	u8 qos_map_set_len;
 	u8 hs20_len;
 	u8 ext_capab_len;
 	u8 ssid_list_len;
-	u8 osen_len;
 	u8 mbo_len;
 	u8 ampe_len;
 	u8 mic_len;
@@ -179,6 +186,11 @@ struct ieee802_11_elems {
 	size_t prior_access_mle_len;
 	u8 mbssid_known_bss_len;
 	u8 mbssid_len;
+	size_t rsne_override_len;
+	size_t rsne_override_2_len;
+	size_t rsnxe_override_len;
+	size_t rsn_selection_len;
+	u8 wfa_capab_len;
 
 	struct mb_ies_info mb_ies;
 
@@ -200,8 +212,7 @@ void ieee802_11_elems_clear_ids(struct ieee802_11_elems *elems,
 				const u8 *ids, size_t num);
 void ieee802_11_elems_clear_ext_ids(struct ieee802_11_elems *elems,
 				    const u8 *ids, size_t num);
-ParseRes ieee802_11_parse_link_assoc_req(const u8 *start, size_t len,
-					 struct ieee802_11_elems *elems,
+ParseRes ieee802_11_parse_link_assoc_req(struct ieee802_11_elems *elems,
 					 struct wpabuf *mlbuf,
 					 u8 link_id, bool show_errors);
 int ieee802_11_ie_count(const u8 *ies, size_t ies_len);
@@ -367,6 +378,9 @@ int ieee802_edmg_is_allowed(struct ieee80211_edmg_config allowed,
 			    struct ieee80211_edmg_config requested);
 
 struct wpabuf * ieee802_11_defrag(const u8 *data, size_t len, bool ext_elem);
+size_t ieee802_11_defrag_mle_subelem(struct wpabuf *mlbuf,
+				     const u8 *parent_subelem,
+				     size_t *defrag_len);
 const u8 * get_ml_ie(const u8 *ies, size_t len, u8 type);
 const u8 * get_basic_mle_mld_addr(const u8 *buf, size_t len);
 

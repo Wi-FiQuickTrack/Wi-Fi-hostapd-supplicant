@@ -118,7 +118,8 @@ def test_he_spr_params(dev, apdev):
 
 def he_supported():
     cmd = subprocess.Popen(["iw", "reg", "get"], stdout=subprocess.PIPE)
-    reg = cmd.stdout.read().decode()
+    out, err = cmd.communicate()
+    reg = out.decode()
     if "@ 80)" in reg or "@ 160)" in reg:
         return True
     return False
@@ -326,21 +327,25 @@ def test_he80_params(dev, apdev):
                   "he_rts_threshold":"1"}
         hapd = hostapd.add_ap(apdev[0], params)
 
-        dev[1].connect("he", key_mgmt="NONE", scan_freq="5180",
-                       disable_vht="1", wait_connect=False)
+        wpas = WpaSupplicant(global_iface='/tmp/wpas-wlan5')
+        wpas.interface_add("wlan5",
+                           drv_params="extra_bss_membership_selectors=126,122")
+
+        wpas.connect("he", key_mgmt="NONE", scan_freq="5180",
+                     disable_vht="1", wait_connect=False)
         dev[0].connect("he", key_mgmt="NONE", scan_freq="5180")
         dev[2].connect("he", key_mgmt="NONE", scan_freq="5180",
                        disable_sgi="1")
-        ev = dev[1].wait_event(["CTRL-EVENT-ASSOC-REJECT"])
+        ev = wpas.wait_event(["CTRL-EVENT-ASSOC-REJECT"])
         if ev is None:
             raise Exception("Association rejection timed out")
         if "status_code=104" not in ev:
             raise Exception("Unexpected rejection status code")
-        dev[1].request("DISCONNECT")
-        dev[1].request("REMOVE_NETWORK all")
-        dev[1].dump_monitor()
-        dev[1].connect("he", key_mgmt="NONE", scan_freq="5180",
-                       disable_he="1", wait_connect=False)
+        wpas.request("DISCONNECT")
+        wpas.request("REMOVE_NETWORK all")
+        wpas.dump_monitor()
+        wpas.connect("he", key_mgmt="NONE", scan_freq="5180",
+                     disable_he="1", wait_connect=False)
         hwsim_utils.test_connectivity(dev[0], hapd)
         sta0 = hapd.get_sta(dev[0].own_addr())
         sta2 = hapd.get_sta(dev[2].own_addr())
@@ -350,7 +355,7 @@ def test_he80_params(dev, apdev):
             raise Exception("dev[0] did not support SGI")
         if capab2 & 0x60 != 0:
             raise Exception("dev[2] claimed support for SGI")
-        ev = dev[1].wait_event(["CTRL-EVENT-ASSOC-REJECT"])
+        ev = wpas.wait_event(["CTRL-EVENT-ASSOC-REJECT"])
         if ev is None:
             raise Exception("Association rejection timed out (2)")
         if "status_code=124" not in ev:
@@ -690,7 +695,8 @@ def run_ap_he160_no_dfs(dev, apdev, channel, ht_capab):
         ev = hapd.wait_event(["AP-ENABLED"], timeout=2)
         if not ev:
             cmd = subprocess.Popen(["iw", "reg", "get"], stdout=subprocess.PIPE)
-            reg = cmd.stdout.readlines()
+            out, err = cmd.communicate()
+            reg = out.splitlines()
             for r in reg:
                 if b"5490" in r and b"DFS" in r:
                     raise HwsimSkip("ZA regulatory rule did not have DFS requirement removed")
@@ -735,7 +741,8 @@ def test_he160_no_ht40(dev, apdev):
         ev = hapd.wait_event(["AP-ENABLED", "AP-DISABLED"], timeout=2)
         if not ev:
             cmd = subprocess.Popen(["iw", "reg", "get"], stdout=subprocess.PIPE)
-            reg = cmd.stdout.readlines()
+            out, err = cmd.communicate()
+            reg = out.splitlines()
             for r in reg:
                 if "5490" in r and "DFS" in r:
                     raise HwsimSkip("ZA regulatory rule did not have DFS requirement removed")
@@ -1646,6 +1653,7 @@ def he_verify_wifi_version(dev):
 
 def test_he_6ghz_reg(dev, apdev):
     """TX power control on 6 GHz"""
+    check_sae_capab(dev[0])
     try:
         ssid = "HE_6GHz_regulatory"
         freq = 5975

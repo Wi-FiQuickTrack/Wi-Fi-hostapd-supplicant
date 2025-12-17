@@ -13,13 +13,14 @@ import struct
 import wpaspy
 import remotehost
 import subprocess
+from remotectrl import RemoteCtrl
 
 logger = logging.getLogger()
 wpas_ctrl = '/var/run/wpa_supplicant'
 
 class WpaSupplicant:
     def __init__(self, ifname=None, global_iface=None, hostname=None,
-                 port=9877, global_port=9878, monitor=True):
+                 port=9877, global_port=9878, monitor=True, remote_cli=False):
         self.monitor = monitor
         self.hostname = hostname
         self.group_ifname = None
@@ -31,6 +32,7 @@ class WpaSupplicant:
         self.ifname = None
         self.host = remotehost.Host(hostname, ifname)
         self._group_dbg = None
+        self.remote_cli = remote_cli
         if ifname:
             self.set_ifname(ifname, hostname, port)
             res = self.get_driver_status()
@@ -41,7 +43,14 @@ class WpaSupplicant:
 
         self.global_iface = global_iface
         if global_iface:
-            if hostname != None:
+            if hostname != None and remote_cli:
+                self.global_ctrl = RemoteCtrl(global_iface, global_port,
+                                              hostname=hostname)
+                if self.monitor:
+                    self.global_mon = RemoteCtrl(global_iface, global_port,
+                                                 hostname=hostname)
+                    self.global_dbg = hostname + "/global"
+            elif hostname != None:
                 self.global_ctrl = wpaspy.Ctrl(hostname, global_port)
                 if self.monitor:
                     self.global_mon = wpaspy.Ctrl(hostname, global_port)
@@ -164,9 +173,16 @@ class WpaSupplicant:
         self.remove_ifname()
         self.ifname = ifname
         if hostname != None:
-            self.ctrl = wpaspy.Ctrl(hostname, port)
-            if self.monitor:
-                self.mon = wpaspy.Ctrl(hostname, port)
+            if self.remote_cli:
+                self.ctrl = RemoteCtrl(wpas_ctrl, port, hostname=hostname,
+                                       ifname=ifname)
+                if self.monitor:
+                    self.mon = RemoteCtrl(wpas_ctrl, port, hostname=hostname,
+                                          ifname=ifname)
+            else:
+                self.ctrl = wpaspy.Ctrl(hostname, port)
+                if self.monitor:
+                    self.mon = wpaspy.Ctrl(hostname, port)
             self.host = remotehost.Host(hostname, ifname)
             self.dbg = hostname + "/" + ifname
         else:
@@ -184,6 +200,8 @@ class WpaSupplicant:
 
     def get_ctrl_iface_port(self, ifname):
         if self.hostname is None:
+            return None
+        if self.remote_cli:
             return None
 
         res = self.global_request("INTERFACES ctrl")
@@ -681,7 +699,8 @@ class WpaSupplicant:
                 vals[name] = value
         return vals
 
-    def group_form_result(self, ev, expect_failure=False, go_neg_res=None):
+    def group_form_result(self, ev, expect_failure=False, go_neg_res=None,
+                          no_pwd=False):
         if expect_failure:
             if "P2P-GROUP-STARTED" in ev:
                 raise Exception("Group formation succeeded when expecting failure")
@@ -697,13 +716,17 @@ class WpaSupplicant:
         if "P2P-GROUP-STARTED" not in ev:
             raise Exception("No P2P-GROUP-STARTED event seen")
 
-        exp = r'<.>(P2P-GROUP-STARTED) ([^ ]*) ([^ ]*) ssid="(.*)" freq=([0-9]*) ((?:psk=.*)|(?:passphrase=".*")) go_dev_addr=([0-9a-f:]*) ip_addr=([0-9.]*) ip_mask=([0-9.]*) go_ip_addr=([0-9.]*)'
+        pwd = '' if no_pwd else r'((?:psk=.*)|(?:passphrase=".*")) '
+        offset = 0 if no_pwd else 1
+        exp = r'<.>(P2P-GROUP-STARTED) ([^ ]*) ([^ ]*) ssid="(.*)" freq=([0-9]*) ' + pwd + \
+              r'go_dev_addr=([0-9a-f:]*) ip_addr=([0-9.]*) ip_mask=([0-9.]*) go_ip_addr=([0-9.]*)'
         s = re.split(exp, ev)
-        if len(s) < 11:
-            exp = r'<.>(P2P-GROUP-STARTED) ([^ ]*) ([^ ]*) ssid="(.*)" freq=([0-9]*) ((?:psk=.*)|(?:passphrase=".*")) go_dev_addr=([0-9a-f:]*)'
+        if len(s) < 10 + offset:
+            exp = r'<.>(P2P-GROUP-STARTED) ([^ ]*) ([^ ]*) ssid="(.*)" freq=([0-9]*) ' + pwd + \
+                  r'go_dev_addr=([0-9a-f:]*)'
             s = re.split(exp, ev)
-            if len(s) < 8:
-                raise Exception("Could not parse P2P-GROUP-STARTED")
+            if len(s) < 7 + offset:
+                raise Exception("Could not parse P2P-GROUP-STARTED %d" % len(s))
         res = {}
         res['result'] = 'success'
         res['ifname'] = s[2]
@@ -733,14 +756,16 @@ class WpaSupplicant:
         p = re.match(r'passphrase="(.*)"', s[6])
         if p:
             res['passphrase'] = p.group(1)
-        res['go_dev_addr'] = s[7]
 
-        if len(s) > 8 and len(s[8]) > 0 and "[PERSISTENT]" not in s[8]:
-            res['ip_addr'] = s[8]
-        if len(s) > 9:
-            res['ip_mask'] = s[9]
-        if len(s) > 10:
-            res['go_ip_addr'] = s[10]
+        res['go_dev_addr'] = s[6 + offset]
+
+        if len(s) > 7 + offset and len(s[7 + offset]) > 0 and \
+           "[PERSISTENT]" not in s[7 + offset]:
+            res['ip_addr'] = s[7 + offset]
+        if len(s) > 8 + offset:
+            res['ip_mask'] = s[8 + offset]
+        if len(s) > 9 + offset:
+            res['go_ip_addr'] = s[9 + offset]
 
         if go_neg_res:
             exp = r'<.>(P2P-GO-NEG-SUCCESS) role=(GO|client) freq=([0-9]*)'
@@ -1117,6 +1142,7 @@ class WpaSupplicant:
                       "wpa_deny_ptk0_rekey",
                       "max_idle",
                       "ssid_protection",
+                      "sae_pwe",
                       "enable_4addr_mode"]
         for field in not_quoted:
             if field in kwargs and kwargs[field]:
@@ -1574,7 +1600,7 @@ class WpaSupplicant:
                       ssid=None, passphrase=None, expect_fail=False,
                       tcp_addr=None, tcp_port=None, conn_status=False,
                       ssid_charset=None, nfc_uri=None, netrole=None,
-                      csrattrs=None):
+                      csrattrs=None, password_id=None):
         cmd = "DPP_AUTH_INIT"
         if peer is None:
             if nfc_uri:
@@ -1600,6 +1626,8 @@ class WpaSupplicant:
             cmd += " ssid_charset=%d" % ssid_charset
         if passphrase:
             cmd += " pass=" + binascii.hexlify(passphrase.encode()).decode()
+        if password_id:
+            cmd += " idpass=" + binascii.hexlify(password_id.encode()).decode()
         if tcp_addr:
             cmd += " tcp_addr=" + tcp_addr
         if tcp_port:

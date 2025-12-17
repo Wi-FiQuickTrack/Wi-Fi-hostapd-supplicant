@@ -15,6 +15,8 @@
 #include "crypto/sha384.h"
 #include "crypto/crypto.h"
 #include "common/ieee802_11_defs.h"
+#include "common/ieee802_11_common.h"
+#include "crypto/aes_wrap.h"
 #include "pasn_common.h"
 
 
@@ -28,6 +30,10 @@ struct pasn_data * pasn_data_init(void)
 
 void pasn_data_deinit(struct pasn_data *pasn)
 {
+	if (!pasn)
+		return;
+	os_free(pasn->rsnxe_ie);
+	wpabuf_free(pasn->frame);
 	bin_clear_free(pasn, sizeof(struct pasn_data));
 }
 
@@ -157,7 +163,7 @@ void pasn_set_rsnxe_ie(struct pasn_data *pasn, const u8 *rsnxe_ie)
 {
 	if (!pasn || !rsnxe_ie)
 		return;
-	pasn->rsnxe_ie = rsnxe_ie;
+	pasn->rsnxe_ie = os_memdup(rsnxe_ie, 2 + rsnxe_ie[1]);
 }
 
 
@@ -189,6 +195,14 @@ int pasn_set_extra_ies(struct pasn_data *pasn, const u8 *extra_ies,
 	}
 	pasn->extra_ies_len = extra_ies_len;
 	return 0;
+}
+
+
+void pasn_set_noauth(struct pasn_data *pasn, bool noauth)
+{
+	if (!pasn)
+		return;
+	pasn->noauth = noauth;
 }
 
 
@@ -229,4 +243,108 @@ struct wpa_ptk * pasn_get_ptk(struct pasn_data *pasn)
 	if (!pasn)
 		return NULL;
 	return &pasn->ptk;
+}
+
+
+int pasn_add_encrypted_data(struct pasn_data *pasn, struct wpabuf *buf,
+			    const u8 *data, size_t data_len)
+{
+	int ret;
+	u8 *encrypted_data, *padded_data = NULL;
+	u8 *len;
+	size_t pad_len = 0;
+
+	if (!pasn->ptk.kek_len) {
+		wpa_printf(MSG_DEBUG, "PASN: KEK not available");
+		return -2;
+	}
+
+	pad_len = data_len % 8;
+	if (pad_len) {
+		pad_len = 8 - pad_len;
+		padded_data = os_zalloc(data_len + pad_len);
+		if (!padded_data)
+			return -1;
+		os_memcpy(padded_data, data, data_len);
+		data = padded_data;
+		padded_data[data_len] = 0xdd;
+	}
+	data_len += pad_len + 8;
+
+	encrypted_data = os_malloc(data_len);
+	if (!encrypted_data) {
+		os_free(padded_data);
+		return -1;
+	}
+
+	ret = aes_wrap(pasn->ptk.kek, pasn->ptk.kek_len,
+		       (data_len - 8) / 8, data, encrypted_data);
+	if (ret) {
+		wpa_printf(MSG_DEBUG, "PASN: AES wrap failed, ret=%d", ret);
+		goto out;
+	}
+
+	if (wpabuf_tailroom(buf) < 1 + 1 + 1 + data_len) {
+		wpa_printf(MSG_DEBUG,
+			   "PASN: Not enough room in the buffer for PASN Encrypred Data element");
+		ret = -1;
+		goto out;
+	}
+
+	wpabuf_put_u8(buf, WLAN_EID_EXTENSION);
+	len = wpabuf_put(buf, 1);
+
+	wpabuf_put_u8(buf, WLAN_EID_EXT_PASN_ENCRYPTED_DATA);
+
+	wpabuf_put_data(buf, encrypted_data, data_len);
+	*len = (u8 *) wpabuf_put(buf, 0) - len - 1;
+
+out:
+	os_free(padded_data);
+	os_free(encrypted_data);
+	return ret;
+}
+
+
+int pasn_parse_encrypted_data(struct pasn_data *pasn, const u8 *data,
+			      size_t len)
+{
+	int ret = -1;
+	u8 *buf;
+	u16 buf_len;
+	struct ieee802_11_elems elems;
+	const struct ieee80211_mgmt *mgmt =
+		(const struct ieee80211_mgmt *) data;
+
+	if (len < 24 + 6 ||
+	    ieee802_11_parse_elems(mgmt->u.auth.variable,
+				   len - offsetof(struct ieee80211_mgmt,
+						  u.auth.variable),
+				   &elems, 0) == ParseFailed) {
+		wpa_printf(MSG_DEBUG,
+			   "PASN: Failed parsing Authentication frame");
+		return -1;
+	}
+
+	if (!elems.pasn_encrypted_data || elems.pasn_encrypted_data_len < 8 ||
+	    elems.pasn_encrypted_data_len % 8) {
+		wpa_printf(MSG_DEBUG, "PASN: No encrypted elements");
+		return 0;
+	}
+
+	buf_len = elems.pasn_encrypted_data_len - 8;
+
+	buf = os_malloc(buf_len);
+	if (!buf)
+		return -1;
+
+	ret = aes_unwrap(pasn->ptk.kek, pasn->ptk.kek_len, buf_len / 8,
+			 elems.pasn_encrypted_data, buf);
+	if (ret)
+		wpa_printf(MSG_DEBUG, "PASN: AES unwrap failed, ret=%d", ret);
+	else if (pasn->parse_data_element && pasn->cb_ctx)
+		ret = pasn->parse_data_element(pasn->cb_ctx, buf, buf_len);
+
+	os_free(buf);
+	return ret;
 }

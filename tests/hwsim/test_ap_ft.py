@@ -374,12 +374,12 @@ def test_ap_ft_vlan(dev, apdev):
     params = ft_params1(ssid=ssid, passphrase=passphrase)
     params['dynamic_vlan'] = "1"
     params['accept_mac_file'] = filename
-    hapd0 = hostapd.add_ap(apdev[0]['ifname'], params)
+    hapd0 = hostapd.add_ap(apdev[0], params)
 
     params = ft_params2(ssid=ssid, passphrase=passphrase)
     params['dynamic_vlan'] = "1"
     params['accept_mac_file'] = filename
-    hapd1 = hostapd.add_ap(apdev[1]['ifname'], params)
+    hapd1 = hostapd.add_ap(apdev[1], params)
 
     run_roams(dev[0], apdev, hapd0, hapd1, ssid, passphrase, conndev="brvlan1")
     if "[WPA2-FT/PSK-CCMP]" not in dev[0].request("SCAN_RESULTS"):
@@ -413,13 +413,13 @@ def test_ap_ft_vlan_disconnected(dev, apdev):
     params['dynamic_vlan'] = "1"
     params['accept_mac_file'] = filename
     params['ft_psk_generate_local'] = "1"
-    hapd0 = hostapd.add_ap(apdev[0]['ifname'], params)
+    hapd0 = hostapd.add_ap(apdev[0], params)
 
     params = ft_params2a(ssid=ssid, passphrase=passphrase)
     params['dynamic_vlan'] = "1"
     params['accept_mac_file'] = filename
     params['ft_psk_generate_local'] = "1"
-    hapd1 = hostapd.add_ap(apdev[1]['ifname'], params)
+    hapd1 = hostapd.add_ap(apdev[1], params)
 
     run_roams(dev[0], apdev, hapd0, hapd1, ssid, passphrase, conndev="brvlan1")
     if "[WPA2-FT/PSK-CCMP]" not in dev[0].request("SCAN_RESULTS"):
@@ -437,11 +437,11 @@ def test_ap_ft_vlan_2(dev, apdev):
     params = ft_params1(ssid=ssid, passphrase=passphrase)
     params['dynamic_vlan'] = "1"
     params['accept_mac_file'] = filename
-    hapd0 = hostapd.add_ap(apdev[0]['ifname'], params)
+    hapd0 = hostapd.add_ap(apdev[0], params)
 
     params = ft_params2(ssid=ssid, passphrase=passphrase)
     params['dynamic_vlan'] = "1"
-    hapd1 = hostapd.add_ap(apdev[1]['ifname'], params)
+    hapd1 = hostapd.add_ap(apdev[1], params)
 
     run_roams(dev[0], apdev, hapd0, hapd1, ssid, passphrase, conndev="brvlan1",
               force_initial_conn_to_first_ap=True)
@@ -520,12 +520,12 @@ def test_ap_ft_many_vlan(dev, apdev):
     params = ft_params1(ssid=ssid, passphrase=passphrase)
     params['dynamic_vlan'] = "1"
     params['accept_mac_file'] = filename
-    hapd0 = hostapd.add_ap(apdev[0]['ifname'], params)
+    hapd0 = hostapd.add_ap(apdev[0], params)
 
     params = ft_params2(ssid=ssid, passphrase=passphrase)
     params['dynamic_vlan'] = "1"
     params['accept_mac_file'] = filename
-    hapd1 = hostapd.add_ap(apdev[1]['ifname'], params)
+    hapd1 = hostapd.add_ap(apdev[1], params)
 
     run_roams(dev[0], apdev, hapd0, hapd1, ssid, passphrase, roams=50,
               conndev="brvlan1")
@@ -862,11 +862,11 @@ def test_ap_ft_vlan_over_ds(dev, apdev):
     params = ft_params1(ssid=ssid, passphrase=passphrase)
     params['dynamic_vlan'] = "1"
     params['accept_mac_file'] = filename
-    hapd0 = hostapd.add_ap(apdev[0]['ifname'], params)
+    hapd0 = hostapd.add_ap(apdev[0], params)
     params = ft_params2(ssid=ssid, passphrase=passphrase)
     params['dynamic_vlan'] = "1"
     params['accept_mac_file'] = filename
-    hapd1 = hostapd.add_ap(apdev[1]['ifname'], params)
+    hapd1 = hostapd.add_ap(apdev[1], params)
 
     dev[0].flush_scan_cache()
     run_roams(dev[0], apdev, hapd0, hapd1, ssid, passphrase, over_ds=True,
@@ -900,11 +900,11 @@ def test_ap_ft_vlan_over_ds_many(dev, apdev):
     params = ft_params1(ssid=ssid, passphrase=passphrase)
     params['dynamic_vlan'] = "1"
     params['accept_mac_file'] = filename
-    hapd0 = hostapd.add_ap(apdev[0]['ifname'], params)
+    hapd0 = hostapd.add_ap(apdev[0], params)
     params = ft_params2(ssid=ssid, passphrase=passphrase)
     params['dynamic_vlan'] = "1"
     params['accept_mac_file'] = filename
-    hapd1 = hostapd.add_ap(apdev[1]['ifname'], params)
+    hapd1 = hostapd.add_ap(apdev[1], params)
 
     dev[0].flush_scan_cache()
     run_roams(dev[0], apdev, hapd0, hapd1, ssid, passphrase, over_ds=True,
@@ -1115,12 +1115,12 @@ def test_ap_ft_over_ds_pull_vlan(dev, apdev):
     params["pmk_r1_push"] = "0"
     params['dynamic_vlan'] = "1"
     params['accept_mac_file'] = filename
-    hapd0 = hostapd.add_ap(apdev[0]['ifname'], params)
+    hapd0 = hostapd.add_ap(apdev[0], params)
     params = ft_params2(ssid=ssid, passphrase=passphrase)
     params["pmk_r1_push"] = "0"
     params['dynamic_vlan'] = "1"
     params['accept_mac_file'] = filename
-    hapd1 = hostapd.add_ap(apdev[1]['ifname'], params)
+    hapd1 = hostapd.add_ap(apdev[1], params)
 
     dev[0].flush_scan_cache()
     run_roams(dev[0], apdev, hapd0, hapd1, ssid, passphrase, over_ds=True,
@@ -1221,6 +1221,55 @@ def test_ap_ft_sae_h2e_and_loop2(dev, apdev):
         run_roams(dev[0], apdev, hapd0, hapd1, "test-ft", "12345678", sae=True)
     finally:
         dev[0].set("sae_pwe", "0")
+
+def test_ap_ft_rsnxe_only_from_sta(dev, apdev):
+    """FT with RSNXE only from STA"""
+    hapd0, hapd1 = start_ft_sae(dev[0], apdev, sae_pwe="0")
+    hapd1.disable()
+    dev[0].scan_for_bss(hapd0.own_addr(), freq=2412)
+    hapd0.set("ext_mgmt_frame_handling", "1")
+    dev[0].connect("test-ft", key_mgmt="FT-SAE", sae_password="12345678",
+                   sae_pwe="2", wait_connect=False)
+
+    for j in range(2):
+        for i in range(0, 10):
+            req = hapd0.mgmt_rx()
+            if req is None:
+                raise Exception("MGMT RX wait timed out (authentication)")
+            if req['subtype'] == 11:
+                break
+            req = None
+        if not req:
+            raise Exception("Authentication frame not received")
+
+        hapd0.request("MGMT_RX_PROCESS freq=2412 datarate=0 ssi_signal=-30 frame=" + binascii.hexlify(req['frame']).decode())
+
+    for i in range(0, 10):
+        req = hapd0.mgmt_rx()
+        if req is None:
+            raise Exception("MGMT RX wait timed out (association)")
+        if req['subtype'] == 0:
+            break
+        req = None
+    if not req:
+        raise Exception("Association Request frame not received")
+
+    hapd0.request("MGMT_RX_PROCESS freq=2412 datarate=0 ssi_signal=-30 frame=" + binascii.hexlify(req['frame']).decode())
+    ev = hapd0.wait_event(["MGMT-TX-STATUS"], timeout=5)
+    if ev is None:
+        raise Exception("Management frame TX status not reported (1)")
+    if "stype=1 ok=1" not in ev:
+        raise Exception("Unexpected management frame TX status (1): " + ev)
+    cmd = "MGMT_TX_STATUS_PROCESS %s" % (" ".join(ev.split(' ')[1:4]))
+    if "OK" not in hapd0.request(cmd):
+        raise Exception("MGMT_TX_STATUS_PROCESS failed")
+
+    dev[0].wait_connected()
+    hapd0.set("ext_mgmt_frame_handling", "0")
+
+    ies = parse_ie(binascii.hexlify(req['payload'][4:]))
+    if 244 not in ies:
+        raise Exception("RSNXE not included in Association Request frame for initial mobility domain association")
 
 def test_ap_ft_sae_h2e_downgrade_attack(dev, apdev):
     """WPA2-PSK-FT-SAE AP (H2E downgrade attack)"""

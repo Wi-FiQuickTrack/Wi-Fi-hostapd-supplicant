@@ -442,6 +442,27 @@ static void punct_update_legacy_bw_160(u8 bitmap, u8 pri,
 }
 
 
+static void punct_update_legacy_bw_320(u16 bitmap, u8 pri,
+				       enum oper_chan_width *width, u8 *seg0)
+{
+	if (pri < *seg0) {
+		*seg0 -= 16;
+		if (bitmap & 0x00FF) {
+			*width = 1;
+			punct_update_legacy_bw_160(bitmap & 0xFF, pri, width,
+						   seg0);
+		}
+	} else {
+		*seg0 += 16;
+		if (bitmap & 0xFF00) {
+			*width = 1;
+			punct_update_legacy_bw_160((bitmap & 0xFF00) >> 8,
+						   pri, width, seg0);
+		}
+	}
+}
+
+
 void punct_update_legacy_bw(u16 bitmap, u8 pri, enum oper_chan_width *width,
 			    u8 *seg0, u8 *seg1)
 {
@@ -456,7 +477,10 @@ void punct_update_legacy_bw(u16 bitmap, u8 pri, enum oper_chan_width *width,
 		punct_update_legacy_bw_160(bitmap & 0xFF, pri, width, seg0);
 	}
 
-	/* TODO: 320 MHz */
+	if (*width == CONF_OPER_CHWIDTH_320MHZ && (bitmap & 0xFFFF)) {
+		*width = CONF_OPER_CHWIDTH_160MHZ;
+		punct_update_legacy_bw_320(bitmap & 0xFFFF, pri, width, seg0);
+	}
 }
 
 
@@ -491,6 +515,7 @@ int hostapd_set_freq_params(struct hostapd_freq_params *data,
 	data->sec_channel_offset = sec_channel_offset;
 	data->center_freq1 = freq + sec_channel_offset * 10;
 	data->center_freq2 = 0;
+	data->punct_bitmap = punct_bitmap;
 	if (oper_chwidth == CONF_OPER_CHWIDTH_80MHZ)
 		data->bandwidth = 80;
 	else if (oper_chwidth == CONF_OPER_CHWIDTH_160MHZ ||
@@ -579,7 +604,8 @@ int hostapd_set_freq_params(struct hostapd_freq_params *data,
 
 	if (data->eht_enabled) switch (oper_chwidth) {
 	case CONF_OPER_CHWIDTH_320MHZ:
-		if (!(eht_cap->phy_cap[EHT_PHYCAP_320MHZ_IN_6GHZ_SUPPORT_IDX] &
+		if (eht_cap &&
+		    !(eht_cap->phy_cap[EHT_PHYCAP_320MHZ_IN_6GHZ_SUPPORT_IDX] &
 		      EHT_PHYCAP_320MHZ_IN_6GHZ_SUPPORT_MASK)) {
 			wpa_printf(MSG_ERROR,
 				   "320 MHz channel width is not supported in 5 or 6 GHz");
@@ -1045,4 +1071,19 @@ bool is_punct_bitmap_valid(u16 bw, u16 pri_ch_bit_pos, u16 punct_bitmap)
 	}
 
 	return false;
+}
+
+
+bool chan_in_current_hw_info(struct hostapd_multi_hw_info *current_hw_info,
+			     struct hostapd_channel_data *chan)
+{
+	/* Assuming that if current_hw_info is not set full
+	 * iface->current_mode->channels[] can be used to scan for channels,
+	 * hence we return true.
+	 */
+	if (!current_hw_info)
+		return true;
+
+	return current_hw_info->start_freq <= chan->freq &&
+		current_hw_info->end_freq >= chan->freq;
 }

@@ -58,6 +58,9 @@ static int wpas_dpp_process_conf_obj(void *ctx,
 				     struct dpp_authentication *auth);
 static bool wpas_dpp_tcp_msg_sent(void *ctx, struct dpp_authentication *auth);
 #endif /* CONFIG_DPP2 */
+#ifdef CONFIG_DPP3
+static void wpas_dpp_pb_next(void *eloop_ctx, void *timeout_ctx);
+#endif /* CONFIG_DPP3 */
 
 static const u8 broadcast[ETH_ALEN] = { 0xff, 0xff, 0xff, 0xff, 0xff, 0xff };
 
@@ -1332,6 +1335,16 @@ void wpas_dpp_tx_wait_expire(struct wpa_supplicant *wpa_s)
 	struct dpp_authentication *auth = wpa_s->dpp_auth;
 	int freq;
 
+#ifdef CONFIG_DPP3
+	if (wpa_s->dpp_pb_announcement && wpa_s->dpp_pb_discovery_done) {
+		wpa_printf(MSG_DEBUG,
+			   "DPP: Failed to send push button announcement");
+		if (eloop_register_timeout(0, 0, wpas_dpp_pb_next,
+					   wpa_s, NULL) < 0)
+			wpas_dpp_push_button_stop(wpa_s);
+	}
+#endif /* CONFIG_DPP3 */
+
 	if (wpa_s->dpp_listen_on_tx_expire && auth && auth->neg_freq) {
 		wpa_printf(MSG_DEBUG,
 			   "DPP: Start listen on neg_freq %u MHz based on TX wait expiration on the previous channel",
@@ -1418,6 +1431,17 @@ static struct wpa_ssid * wpas_dpp_add_network(struct wpa_supplicant *wpa_s,
 	os_memcpy(ssid->ssid, conf->ssid, conf->ssid_len);
 	ssid->ssid_len = conf->ssid_len;
 
+#ifdef CONFIG_DPP3
+	if (conf->akm == DPP_AKM_SAE && conf->password_id[0]) {
+		size_t len = os_strlen(conf->password_id);
+
+		ssid->sae_password_id = os_zalloc(len + 1);
+		if (!ssid->sae_password_id)
+			goto fail;
+		os_memcpy(ssid->sae_password_id, conf->password_id, len);
+	}
+#endif /* CONFIG_DPP3 */
+
 	if (conf->connector) {
 		if (dpp_akm_dpp(conf->akm)) {
 			ssid->key_mgmt = WPA_KEY_MGMT_DPP;
@@ -1475,11 +1499,16 @@ static struct wpa_ssid * wpas_dpp_add_network(struct wpa_supplicant *wpa_s,
 			ssid->ieee80211w = MGMT_FRAME_PROTECTION_OPTIONAL;
 		else
 			ssid->ieee80211w = MGMT_FRAME_PROTECTION_REQUIRED;
-		if (conf->passphrase[0]) {
+		if (conf->passphrase[0] && dpp_akm_psk(conf->akm)) {
 			if (wpa_config_set_quoted(ssid, "psk",
 						  conf->passphrase) < 0)
 				goto fail;
 			wpa_config_update_psk(ssid);
+			ssid->export_keys = 1;
+		} else if (conf->passphrase[0] && dpp_akm_sae(conf->akm)) {
+			if (wpa_config_set_quoted(ssid, "sae_password",
+						  conf->passphrase) < 0)
+				goto fail;
 			ssid->export_keys = 1;
 		} else {
 			ssid->psk_set = conf->psk_set;
@@ -1691,6 +1720,12 @@ static int wpas_dpp_handle_config_obj(struct wpa_supplicant *wpa_s,
 		wpa_msg(wpa_s, MSG_INFO, DPP_EVENT_CONFOBJ_PSK "%s",
 			hex);
 	}
+#ifdef CONFIG_DPP3
+	if (conf->password_id[0]) {
+		wpa_msg(wpa_s, MSG_INFO, DPP_EVENT_CONFOBJ_IDPASS "%s",
+			conf->password_id);
+	}
+#endif /* CONFIG_DPP3 */
 	if (conf->c_sign_key) {
 		char *hex;
 		size_t hexlen;
@@ -4500,7 +4535,7 @@ int wpas_dpp_check_connect(struct wpa_supplicant *wpa_s, struct wpa_ssid *ssid,
 
 	if (!(ssid->key_mgmt & WPA_KEY_MGMT_DPP) || !bss)
 		return 0; /* Not using DPP AKM - continue */
-	rsn = wpa_bss_get_ie(bss, WLAN_EID_RSN);
+	rsn = wpa_bss_get_rsne(wpa_s, bss, ssid, false);
 	if (rsn && wpa_parse_wpa_ie(rsn, 2 + rsn[1], &ied) == 0 &&
 	    !(ied.key_mgmt & WPA_KEY_MGMT_DPP))
 		return 0; /* AP does not support DPP AKM - continue */
@@ -5485,7 +5520,6 @@ int wpas_dpp_ca_set(struct wpa_supplicant *wpa_s, const char *cmd)
 #define DPP_PB_ANNOUNCE_PER_CHAN 3
 
 static int wpas_dpp_pb_announce(struct wpa_supplicant *wpa_s, int freq);
-static void wpas_dpp_pb_next(void *eloop_ctx, void *timeout_ctx);
 
 
 static void wpas_dpp_pb_tx_status(struct wpa_supplicant *wpa_s,
@@ -5733,6 +5767,7 @@ int wpas_dpp_push_button(struct wpa_supplicant *wpa_s, const char *cmd)
 		   "DPP: Scan to create channel list for PB discovery");
 	wpa_s->scan_req = MANUAL_SCAN_REQ;
 	wpa_s->scan_res_handler = wpas_dpp_pb_scan_res_handler;
+	wpa_supplicant_cancel_sched_scan(wpa_s);
 	wpa_supplicant_req_scan(wpa_s, 0, 0);
 	wpa_msg(wpa_s, MSG_INFO, DPP_EVENT_PB_STATUS "started");
 	return 0;

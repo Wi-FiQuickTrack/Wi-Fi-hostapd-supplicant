@@ -85,6 +85,25 @@ static int ieee80211_invalid_he_cap_size(const u8 *buf, size_t len)
 	return len < cap_len;
 }
 
+#ifdef CONFIG_WFA
+void hostapd_wfa_eid_he_capa_res_bits(u8 *field_pos)
+{
+    struct ieee80211_he_capabilities *cap;
+    u8 *pos;
+
+    cap = (struct ieee80211_he_capabilities *)field_pos;
+    /* he mac capa: res b24 */
+    pos = (u8 *)cap->he_mac_capab_info;
+    *(pos + 3) |= BIT(0);
+
+    /* he phy capa: res b0, b81-87 */
+    pos = (u8 *)cap->he_phy_capab_info;
+    *pos |= BIT(0);
+    *(pos + 10) |= 0xFE;
+
+    wpa_printf(MSG_DEBUG, "ext_id(%d): Set reserved bits",WLAN_EID_EXT_HE_CAPABILITIES);
+}
+#endif
 
 u8 * hostapd_eid_he_capab(struct hostapd_data *hapd, u8 *eid,
 			  enum ieee80211_op_mode opmode)
@@ -94,6 +113,9 @@ u8 * hostapd_eid_he_capab(struct hostapd_data *hapd, u8 *eid,
 	u8 he_oper_chwidth = ~HE_PHYCAP_CHANNEL_WIDTH_MASK;
 	u8 *pos = eid;
 	u8 ie_size = 0, mcs_nss_size = 4, ppet_size = 0;
+#ifdef CONFIG_WFA
+	u8 *len_pos = eid + 1;
+#endif
 
 	if (!mode)
 		return eid;
@@ -170,6 +192,15 @@ u8 * hostapd_eid_he_capab(struct hostapd_data *hapd, u8 *eid,
 
 	pos += ie_size;
 
+#ifdef CONFIG_WFA
+	if (hapd->iconf->he_capa_res_bits) {
+		hostapd_wfa_eid_he_capa_res_bits((u8 *)cap);
+	}
+	if (hapd->iconf->he_capa_extend) {
+		pos = hostapd_wfa_element_extend(pos, len_pos);
+        }
+#endif
+
 	return pos;
 }
 
@@ -226,7 +257,7 @@ u8 * hostapd_eid_he_operation(struct hostapd_data *hapd, u8 *eid)
 
 	if (is_6ghz_op_class(hapd->iconf->op_class)) {
 		enum oper_chan_width oper_chwidth =
-			hostapd_get_oper_chwidth(hapd->iconf);
+			hapd->iconf->he_oper_chwidth;
 		u8 seg0 = hapd->iconf->he_oper_centr_freq_seg0_idx;
 		u8 seg1 = hostapd_get_oper_centr_freq_seg1_idx(hapd->iconf);
 		u8 control;
@@ -234,6 +265,9 @@ u8 * hostapd_eid_he_operation(struct hostapd_data *hapd, u8 *eid)
 		u16 punct_bitmap = hostapd_get_punct_bitmap(hapd);
 
 		if (punct_bitmap) {
+			oper_chwidth = hostapd_get_oper_chwidth(hapd->iconf);
+			seg0 = hostapd_get_oper_centr_freq_seg0_idx(
+				hapd->iconf);
 			punct_update_legacy_bw(punct_bitmap,
 					       hapd->iconf->channel,
 					       &oper_chwidth, &seg0, &seg1);
@@ -267,6 +301,13 @@ u8 * hostapd_eid_he_operation(struct hostapd_data *hapd, u8 *eid)
 
 		*pos++ = control;
 
+#ifdef CONFIG_WFA
+        if (hapd->iconf->he_oper_res_bits) {
+            /* control field: res b7 */
+            *(pos - 1) |= BIT(7);
+        }
+#endif
+
 		/* Channel Center Freq Seg0/Seg1 */
 		if (oper_chwidth == CONF_OPER_CHWIDTH_160MHZ ||
 		    oper_chwidth == CONF_OPER_CHWIDTH_320MHZ) {
@@ -298,6 +339,9 @@ u8 * hostapd_eid_he_mu_edca_parameter_set(struct hostapd_data *hapd, u8 *eid)
 	struct ieee80211_he_mu_edca_parameter_set *edca;
 	u8 *pos;
 	size_t i;
+#ifdef CONFIG_WFA
+	u8 *len_pos = eid + 1;
+#endif
 
 	pos = (u8 *) &hapd->iface->conf->he_mu_edca;
 	for (i = 0; i < sizeof(*edca); i++) {
@@ -319,6 +363,12 @@ u8 * hostapd_eid_he_mu_edca_parameter_set(struct hostapd_data *hapd, u8 *eid)
 		    pos, sizeof(*edca));
 
 	pos += sizeof(*edca);
+
+#ifdef CONFIG_WFA
+	if (hapd->iconf->mu_edca_extend) {
+		pos = hostapd_wfa_element_extend(pos, len_pos);
+	}
+#endif
 
 	return pos;
 }
@@ -379,6 +429,9 @@ u8 * hostapd_eid_he_6ghz_band_cap(struct hostapd_data *hapd, u8 *eid)
 	struct ieee80211_he_6ghz_band_cap *cap;
 	u16 capab;
 	u8 *pos;
+#ifdef CONFIG_WFA
+	u8 *len_pos = eid + 1;
+#endif
 
 	if (!mode || !is_6ghz_op_class(hapd->iconf->op_class) ||
 	    !is_6ghz_freq(hapd->iface->freq))
@@ -398,6 +451,13 @@ u8 * hostapd_eid_he_6ghz_band_cap(struct hostapd_data *hapd, u8 *eid)
 	if (conf->he_6ghz_tx_ant_pat)
 		capab |= HE_6GHZ_BAND_CAP_TX_ANTPAT_CONS;
 
+#ifdef CONFIG_WFA
+	if (hapd->iconf->he_6g_capa_res_bits) {
+		/* capa info field: res b8,14,15 */
+		capab |= (BIT(8) | BIT(14) | BIT(15));
+	}
+#endif
+
 	pos = eid;
 	*pos++ = WLAN_EID_EXTENSION;
 	*pos++ = 1 + sizeof(*cap);
@@ -406,6 +466,12 @@ u8 * hostapd_eid_he_6ghz_band_cap(struct hostapd_data *hapd, u8 *eid)
 	cap = (struct ieee80211_he_6ghz_band_cap *) pos;
 	cap->capab = host_to_le16(capab);
 	pos += sizeof(*cap);
+
+#ifdef CONFIG_WFA
+	if (hapd->iconf->he_6g_capa_extend) {
+		pos = hostapd_wfa_element_extend(pos, len_pos);
+	}
+#endif
 
 	return pos;
 }

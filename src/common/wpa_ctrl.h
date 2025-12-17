@@ -13,6 +13,8 @@
 extern "C" {
 #endif
 
+#define WPA_CTRL_IFACE_LINK_NAME	"link"
+
 /* wpa_supplicant control interface - fixed message prefixes */
 
 /** Interactive request for identity/password/pin */
@@ -208,6 +210,7 @@ extern "C" {
 #define DPP_EVENT_CONFOBJ_SSID "DPP-CONFOBJ-SSID "
 #define DPP_EVENT_CONFOBJ_SSID_CHARSET "DPP-CONFOBJ-SSID-CHARSET "
 #define DPP_EVENT_CONFOBJ_PASS "DPP-CONFOBJ-PASS "
+#define DPP_EVENT_CONFOBJ_IDPASS "DPP-CONFOBJ-IDPASS "
 #define DPP_EVENT_CONFOBJ_PSK "DPP-CONFOBJ-PSK "
 #define DPP_EVENT_CONNECTOR "DPP-CONNECTOR "
 #define DPP_EVENT_C_SIGN_KEY "DPP-C-SIGN-KEY "
@@ -229,6 +232,7 @@ extern "C" {
 #define DPP_EVENT_CHIRP_STOPPED "DPP-CHIRP-STOPPED "
 #define DPP_EVENT_MUD_URL "DPP-MUD-URL "
 #define DPP_EVENT_BAND_SUPPORT "DPP-BAND-SUPPORT "
+#define DPP_EVENT_ENROLLEE_CAPABILITY "DPP-ENROLLEE-CAPABILITY "
 #define DPP_EVENT_CSR "DPP-CSR "
 #define DPP_EVENT_CHIRP_RX "DPP-CHIRP-RX "
 #define DPP_EVENT_CONF_NEEDED "DPP-CONF-NEEDED "
@@ -308,6 +312,10 @@ extern "C" {
 #define P2P_EVENT_P2PS_PROVISION_START "P2PS-PROV-START "
 #define P2P_EVENT_P2PS_PROVISION_DONE "P2PS-PROV-DONE "
 
+#define P2P_EVENT_BOOTSTRAP_REQUEST "P2P-BOOTSTRAP-REQUEST "
+#define P2P_EVENT_BOOTSTRAP_SUCCESS "P2P-BOOTSTRAP-SUCCESS "
+#define P2P_EVENT_BOOTSTRAP_FAILURE "P2P-BOOTSTRAP-FAILURE "
+
 #define INTERWORKING_AP "INTERWORKING-AP "
 #define INTERWORKING_EXCLUDED "INTERWORKING-BLACKLISTED "
 #define INTERWORKING_NO_MATCH "INTERWORKING-NO-MATCH "
@@ -342,7 +350,6 @@ extern "C" {
 /* parameters: <Venue Number> <Venue URL> */
 #define RX_VENUE_URL "RX-VENUE-URL "
 
-#define HS20_SUBSCRIPTION_REMEDIATION "HS20-SUBSCRIPTION-REMEDIATION "
 #define HS20_DEAUTH_IMMINENT_NOTICE "HS20-DEAUTH-IMMINENT-NOTICE "
 #define HS20_T_C_ACCEPTANCE "HS20-T-C-ACCEPTANCE "
 
@@ -454,6 +461,11 @@ extern "C" {
 
 /* Event triggered for received management frame */
 #define AP_MGMT_FRAME_RECEIVED "AP-MGMT-FRAME-RECEIVED "
+
+/* Event triggerred on AP receiving Wi-Fi Alliance Generational Capabilities
+ * indication.
+ * Parameters: <STA addr> <Generational Capabilities Indication body> */
+#define WFA_GEN_CAPAB_RX "WFA-GEN-CAPAB "
 
 #ifndef BIT
 #define BIT(x) (1U << (x))

@@ -750,17 +750,20 @@ static struct wpabuf * wpa_supplicant_extra_ies(struct wpa_supplicant *wpa_s)
 	ext_capab_len = wpas_build_ext_capab(wpa_s, ext_capab,
 					     sizeof(ext_capab), NULL);
 	if (ext_capab_len > 0 &&
+	    (size_t) ext_capab_len < wpa_s->drv_max_probe_req_ie_len &&
 	    wpabuf_resize(&extra_ie, ext_capab_len) == 0)
 		wpabuf_put_data(extra_ie, ext_capab, ext_capab_len);
 
 #ifdef CONFIG_INTERWORKING
 	if (wpa_s->conf->interworking &&
+	    wpa_s->drv_max_probe_req_ie_len >= 2 &&
 	    wpabuf_resize(&extra_ie, 100) == 0)
 		wpas_add_interworking_elements(wpa_s, extra_ie);
 #endif /* CONFIG_INTERWORKING */
 
 #ifdef CONFIG_MBO
-	if (wpa_s->enable_oce & OCE_STA)
+	if ((wpa_s->enable_oce & OCE_STA) &&
+	    wpa_s->drv_max_probe_req_ie_len >= 5)
 		wpas_fils_req_param_add_max_channel(wpa_s, &extra_ie);
 #endif /* CONFIG_MBO */
 
@@ -774,17 +777,19 @@ static struct wpabuf * wpa_supplicant_extra_ies(struct wpa_supplicant *wpa_s)
 						&wpa_s->wps->dev,
 						wpa_s->wps->uuid, req_type,
 						0, NULL);
-		if (wps_ie) {
-			if (wpabuf_resize(&extra_ie, wpabuf_len(wps_ie)) == 0)
-				wpabuf_put_buf(extra_ie, wps_ie);
-			wpabuf_free(wps_ie);
-		}
+		if (wps_ie &&
+		    wpabuf_len(wps_ie) <= wpa_s->drv_max_probe_req_ie_len &&
+		    wpabuf_resize(&extra_ie, wpabuf_len(wps_ie)) == 0)
+			wpabuf_put_buf(extra_ie, wps_ie);
+		wpabuf_free(wps_ie);
 	}
 
 #ifdef CONFIG_P2P
 	if (wps) {
 		size_t ielen = p2p_scan_ie_buf_len(wpa_s->global->p2p);
-		if (wpabuf_resize(&extra_ie, ielen) == 0)
+
+		if (ielen <= wpa_s->drv_max_probe_req_ie_len &&
+		    wpabuf_resize(&extra_ie, ielen) == 0)
 			wpas_p2p_scan_ie(wpa_s, extra_ie);
 	}
 #endif /* CONFIG_P2P */
@@ -794,12 +799,14 @@ static struct wpabuf * wpa_supplicant_extra_ies(struct wpa_supplicant *wpa_s)
 #endif /* CONFIG_WPS */
 
 #ifdef CONFIG_HS20
-	if (wpa_s->conf->hs20 && wpabuf_resize(&extra_ie, 9) == 0)
+	if (wpa_s->conf->hs20 && wpa_s->drv_max_probe_req_ie_len >= 9 &&
+	    wpabuf_resize(&extra_ie, 9) == 0)
 		wpas_hs20_add_indication(extra_ie, -1, 0);
 #endif /* CONFIG_HS20 */
 
 #ifdef CONFIG_FST
 	if (wpa_s->fst_ies &&
+	    wpa_s->drv_max_probe_req_ie_len >= wpabuf_len(wpa_s->fst_ies) &&
 	    wpabuf_resize(&extra_ie, wpabuf_len(wpa_s->fst_ies)) == 0)
 		wpabuf_put_buf(extra_ie, wpa_s->fst_ies);
 #endif /* CONFIG_FST */
@@ -813,7 +820,8 @@ static struct wpabuf * wpa_supplicant_extra_ies(struct wpa_supplicant *wpa_s)
 	if (wpa_s->vendor_elem[VENDOR_ELEM_PROBE_REQ]) {
 		struct wpabuf *buf = wpa_s->vendor_elem[VENDOR_ELEM_PROBE_REQ];
 
-		if (wpabuf_resize(&extra_ie, wpabuf_len(buf)) == 0)
+		if (wpa_s->drv_max_probe_req_ie_len >= wpabuf_len(buf) &&
+		    wpabuf_resize(&extra_ie, wpabuf_len(buf)) == 0)
 			wpabuf_put_buf(extra_ie, buf);
 	}
 
@@ -940,9 +948,9 @@ static void wpa_add_scan_ssid(struct wpa_supplicant *wpa_s,
 }
 
 
-static void wpa_add_owe_scan_ssid(struct wpa_supplicant *wpa_s,
-				  struct wpa_driver_scan_params *params,
-				  struct wpa_ssid *ssid, size_t max_ssids)
+void wpa_add_owe_scan_ssid(struct wpa_supplicant *wpa_s,
+			   struct wpa_driver_scan_params *params,
+			   const struct wpa_ssid *ssid, size_t max_ssids)
 {
 #ifdef CONFIG_OWE
 	struct wpa_bss *bss;
@@ -954,8 +962,7 @@ static void wpa_add_owe_scan_ssid(struct wpa_supplicant *wpa_s,
 		   wpa_ssid_txt(ssid->ssid, ssid->ssid_len));
 
 	dl_list_for_each(bss, &wpa_s->bss, struct wpa_bss, list) {
-		const u8 *owe, *pos, *end;
-		const u8 *owe_ssid;
+		const u8 *owe, *owe_bssid, *owe_ssid;
 		size_t owe_ssid_len;
 
 		if (bss->ssid_len != ssid->ssid_len ||
@@ -966,21 +973,9 @@ static void wpa_add_owe_scan_ssid(struct wpa_supplicant *wpa_s,
 		if (!owe || owe[1] < 4)
 			continue;
 
-		pos = owe + 6;
-		end = owe + 2 + owe[1];
-
-		/* Must include BSSID and ssid_len */
-		if (end - pos < ETH_ALEN + 1)
-			return;
-
-		/* Skip BSSID */
-		pos += ETH_ALEN;
-		owe_ssid_len = *pos++;
-		owe_ssid = pos;
-
-		if ((size_t) (end - pos) < owe_ssid_len ||
-		    owe_ssid_len > SSID_MAX_LEN)
-			return;
+		if (wpas_get_owe_trans_network(owe, &owe_bssid, &owe_ssid,
+					       &owe_ssid_len))
+			continue;
 
 		wpa_printf(MSG_DEBUG,
 			   "OWE: scan_ssids: transition mode OWE ssid=%s",
@@ -2381,7 +2376,9 @@ static int wpa_scan_result_compar(const void *a, const void *b)
 	int wpa_a, wpa_b;
 	int snr_a, snr_b, snr_a_full, snr_b_full;
 	size_t ies_len;
+#ifndef CONFIG_NO_WPA
 	const u8 *rsne_a, *rsne_b;
+#endif /* CONFIG_NO_WPA */
 
 	/* WPA/WPA2 support preferred */
 	wpa_a = wpa_scan_get_vendor_ie(wa, WPA_IE_VENDOR_TYPE) != NULL ||
@@ -2425,6 +2422,7 @@ static int wpa_scan_result_compar(const void *a, const void *b)
 		snr_b = snr_b_full = wb->level;
 	}
 
+#ifndef CONFIG_NO_WPA
 	/* If SNR of a SAE BSS is good or at least as high as the PSK BSS,
 	 * prefer SAE over PSK for mixed WPA3-Personal transition mode and
 	 * WPA2-Personal deployments */
@@ -2450,6 +2448,7 @@ static int wpa_scan_result_compar(const void *a, const void *b)
 		    (snr_b >= GREAT_SNR || snr_b >= snr_a))
 			return 1;
 	}
+#endif /* CONFIG_NO_WPA */
 
 	/* If SNR is close, decide by max rate or frequency band. For cases
 	 * involving the 6 GHz band, use the throughput estimate irrespective

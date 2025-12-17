@@ -417,6 +417,47 @@ struct wpa_cred {
 	int sim_num;
 };
 
+struct wpa_dev_ik {
+	/**
+	 * next - Next device identity in the list
+	 *
+	 * This pointer can be used to iterate over all device identity keys.
+	 * The head of this list is stored in the dev_ik field of struct
+	 * wpa_config.
+	 */
+	struct wpa_dev_ik *next;
+
+	/**
+	 * id - Unique id for the identity
+	 *
+	 * This identifier is used as a unique identifier for each identity
+	 * block when using the control interface. Each identity is allocated
+	 * an id when it is being created, either when reading the
+	 * configuration file or when a new identity is added.
+	 */
+	int id;
+
+	/**
+	 * dik_cipher - Device identity key cipher version
+	 */
+	int dik_cipher;
+
+	/**
+	 * dik - Device identity key which is unique for the device
+	 */
+	struct wpabuf *dik;
+
+	/**
+	 * pmk - PMK associated with the previous connection with the device
+	 */
+	struct wpabuf *pmk;
+
+	/**
+	 * pmkid - PMKID used in the previous connection with the device
+	 */
+	struct wpabuf *pmkid;
+};
+
 
 #define CFG_CHANGED_DEVICE_NAME BIT(0)
 #define CFG_CHANGED_CONFIG_METHODS BIT(1)
@@ -858,6 +899,14 @@ struct wpa_config {
 	int p2p_optimize_listen_chan;
 
 	int p2p_6ghz_disable;
+	bool p2p_pairing_setup;
+	bool p2p_pairing_cache;
+	int p2p_bootstrap_methods;
+	int p2p_pasn_type;
+	int p2p_comeback_after;
+	bool p2p_twt_power_mgmt;
+	bool p2p_chan_switch_req_enable;
+	int p2p_reg_info;
 
 	struct wpabuf *wps_vendor_ext_m1;
 
@@ -1387,15 +1436,6 @@ struct wpa_config {
 	u8 ip_addr_end[4];
 
 	/**
-	 * osu_dir - OSU provider information directory
-	 *
-	 * If set, allow FETCH_OSU control interface command to be used to fetch
-	 * OSU provider information into all APs and store the results in this
-	 * directory.
-	 */
-	char *osu_dir;
-
-	/**
 	 * wowlan_triggers - Wake-on-WLAN triggers
 	 *
 	 * If set, these wowlan triggers will be configured.
@@ -1774,6 +1814,11 @@ struct wpa_config {
 	 */
 	int wowlan_disconnect_on_deinit;
 
+	/**
+	 * rsn_overriding - RSN overriding (default behavior)
+	 */
+	enum wpas_rsn_overriding rsn_overriding;
+
 #ifdef CONFIG_PASN
 #ifdef CONFIG_TESTING_OPTIONS
 	/*
@@ -1801,6 +1846,61 @@ struct wpa_config {
 
 	int mld_force_single_link;
 #endif /* CONFIG_TESTING_OPTIONS */
+
+	/* Cipher version type */
+	int dik_cipher;
+
+	/* DevIK */
+	struct wpabuf *dik;
+
+	/**
+	 * identity - P2P2 peer device identities
+	 *
+	 * This is the head for the list of all the paired devices.
+	 */
+	struct wpa_dev_ik *identity;
+
+	/**
+	 * twt_requester - Whether TWT Requester Support is enabled
+	 *
+	 * This is for setting the bit 77 of the Extended Capabilities element.
+	 */
+	bool twt_requester;
+
+	/**
+	 * wfa_gen_capa: Whether to indicate Wi-Fi generational capability to
+	 *	the AP
+	 *
+	 * 0 = do not indicate (default)
+	 * 1 = indicate in protected Action frame
+	 * 2 = indicate in unprotected (Re)Association Request frame
+	 */
+	enum {
+		WFA_GEN_CAPA_DISABLED = 0,
+		WFA_GEN_CAPA_PROTECTED = 1,
+		WFA_GEN_CAPA_UNPROTECTED = 2,
+	} wfa_gen_capa;
+
+	/**
+	 * wfa_gen_capa_supp: Supported Generations (hexdump of a bit field)
+	 *
+	 * A bit field of supported Wi-Fi generations. This is encoded as an
+	 * little endian octt string.
+	 * bit 0: Wi-Fi 4
+	 * bit 1: Wi-Fi 5
+	 * bit 2: Wi-Fi 6
+	 * bit 3: Wi-Fi 7
+	 */
+	struct wpabuf *wfa_gen_capa_supp;
+
+	/**
+	 * wfa_gen_capa_cert: Certified Generations (hexdump of a bit field)
+	 *
+	 * This has the same format as wfa_gen_capa_supp. This is an optional
+	 * field, but if included, shall have the same length as
+	 * wfa_gen_capa_supp.
+	 */
+	struct wpabuf *wfa_gen_capa_cert;
 };
 
 
@@ -1812,6 +1912,8 @@ void wpa_config_foreach_network(struct wpa_config *config,
 				void (*func)(void *, struct wpa_ssid *),
 				void *arg);
 struct wpa_ssid * wpa_config_get_network(struct wpa_config *config, int id);
+struct wpa_ssid * wpa_config_get_network_with_dik_id(struct wpa_config *config,
+						     int dik_id);
 struct wpa_ssid * wpa_config_add_network(struct wpa_config *config);
 int wpa_config_remove_network(struct wpa_config *config, int id);
 void wpa_config_set_network_defaults(struct wpa_ssid *ssid);
@@ -1846,6 +1948,12 @@ void wpa_config_free_cred(struct wpa_cred *cred);
 int wpa_config_set_cred(struct wpa_cred *cred, const char *var,
 			const char *value, int line);
 char * wpa_config_get_cred_no_key(struct wpa_cred *cred, const char *var);
+
+int wpa_config_set_identity(struct wpa_dev_ik *identity, const char *var,
+			    const char *value, int line);
+void wpa_config_free_identity(struct wpa_dev_ik *identity);
+struct wpa_dev_ik * wpa_config_add_identity(struct wpa_config *config);
+int wpa_config_remove_identity(struct wpa_config *config, int id);
 
 struct wpa_config * wpa_config_alloc_empty(const char *ctrl_interface,
 					   const char *driver_param);

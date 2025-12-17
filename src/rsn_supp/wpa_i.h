@@ -69,7 +69,7 @@ struct wpa_sm {
 	u8 ssid[32];
 	size_t ssid_len;
 	int wpa_ptk_rekey;
-	int wpa_deny_ptk0_rekey:1;
+	unsigned int wpa_deny_ptk0_rekey:1;
 	int p2p;
 	int wpa_rsc_relaxation;
 	int owe_ptk_workaround;
@@ -113,6 +113,7 @@ struct wpa_sm {
 	unsigned int secure_rtt:1;
 	unsigned int prot_range_neg:1;
 	unsigned int ssid_protection:1;
+	unsigned int spp_amsdu:1;
 
 	u8 *assoc_wpa_ie; /* Own WPA/RSN IE from (Re)AssocReq */
 	size_t assoc_wpa_ie_len;
@@ -120,6 +121,9 @@ struct wpa_sm {
 	size_t assoc_rsnxe_len;
 	u8 *ap_wpa_ie, *ap_rsn_ie, *ap_rsnxe;
 	size_t ap_wpa_ie_len, ap_rsn_ie_len, ap_rsnxe_len;
+	u8 *ap_rsne_override, *ap_rsne_override_2, *ap_rsnxe_override;
+	size_t ap_rsne_override_len, ap_rsne_override_2_len,
+		ap_rsnxe_override_len;
 
 #ifdef CONFIG_TDLS
 	struct wpa_tdls_peer *tdls;
@@ -185,16 +189,21 @@ struct wpa_sm {
 	struct wpabuf *test_assoc_ie;
 	struct wpabuf *test_eapol_m2_elems;
 	struct wpabuf *test_eapol_m4_elems;
+	struct wpabuf *test_rsnxe_data;
+	struct wpabuf *test_rsnxe_mask;
 	int ft_rsnxe_used;
 	unsigned int oci_freq_override_eapol;
 	unsigned int oci_freq_override_eapol_g2;
 	unsigned int oci_freq_override_ft_assoc;
 	unsigned int oci_freq_override_fils_assoc;
 	unsigned int disable_eapol_g2_tx;
+	unsigned int eapol_2_key_info_set_mask;
 	bool encrypt_eapol_m2;
 	bool encrypt_eapol_m4;
 #endif /* CONFIG_TESTING_OPTIONS */
-
+#ifdef CONFIG_WFA
+	int random_pmkid;
+#endif
 #ifdef CONFIG_FILS
 	u8 fils_nonce[FILS_NONCE_LEN];
 	u8 fils_session[FILS_SESSION_LEN];
@@ -229,6 +238,17 @@ struct wpa_sm {
 	bool wmm_enabled;
 	bool driver_bss_selection;
 	bool ft_prepend_pmkid;
+
+	bool rsn_override_support;
+	enum wpa_rsn_override rsn_override;
+
+	u8 last_kck[WPA_KCK_MAX_LEN];
+	size_t last_kck_len;
+	size_t last_kck_pmk_len;
+	unsigned int last_kck_key_mgmt;
+	int last_kck_eapol_key_ver;
+	u8 last_kck_aa[ETH_ALEN];
+	int last_eapol_key_ver;
 };
 
 
@@ -542,5 +562,6 @@ int wpa_derive_ptk_ft(struct wpa_sm *sm, const unsigned char *src_addr,
 
 void wpa_tdls_assoc(struct wpa_sm *sm);
 void wpa_tdls_disassoc(struct wpa_sm *sm);
+bool wpa_sm_rsn_overriding_supported(struct wpa_sm *sm);
 
 #endif /* WPA_I_H */

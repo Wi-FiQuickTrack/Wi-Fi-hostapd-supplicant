@@ -1291,6 +1291,11 @@ def test_scan_chan_switch(dev, apdev):
     run_scan(dev[0], bssid, 2412)
     dev[0].dump_monitor()
 
+    dev[0].request("DISCONNECT")
+    dev[0].wait_disconnected()
+    hapd.disable()
+    dev[0].flush_scan_cache()
+
 def test_scan_new_only(dev, apdev):
     """Scan and only_new=1 multiple times"""
     dev[0].flush_scan_cache()
@@ -1534,7 +1539,17 @@ def test_scan_specific_bssid(dev, apdev):
 
 def test_scan_probe_req_events(dev, apdev):
     """Probe Request frame RX events from hostapd"""
-    hapd = hostapd.add_ap(apdev[0], {"ssid": "open"})
+    run_scan_probe_req_events(dev, apdev)
+
+def test_scan_probe_req_events_with_payload(dev, apdev):
+    """Probe Request frame RX events with payload from hostapd"""
+    run_scan_probe_req_events(dev, apdev, with_payload=True)
+
+def run_scan_probe_req_events(dev, apdev, with_payload=False):
+    params = {"ssid": "open"}
+    if with_payload:
+        params["notify_mgmt_frames"] = "1"
+    hapd = hostapd.add_ap(apdev[0], params)
     hapd2 = hostapd.Hostapd(apdev[0]['ifname'])
     if "OK" not in hapd2.mon.request("ATTACH probe_rx_events=1"):
         raise Exception("Failed to register for events")
@@ -1546,6 +1561,8 @@ def test_scan_probe_req_events(dev, apdev):
         raise Exception("RX-PROBE-REQUEST not reported")
     if "sa=" + dev[0].own_addr() not in ev:
         raise Exception("Unexpected event parameters: " + ev)
+    if with_payload and " buf=40" not in ev:
+        raise Exception("Missing payload in event parameters: " + ev)
 
     ev = hapd.wait_event(["RX-PROBE-REQUEST"], timeout=0.1)
     if ev is not None:

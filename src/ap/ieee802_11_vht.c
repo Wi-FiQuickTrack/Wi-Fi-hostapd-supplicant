@@ -65,6 +65,14 @@ u8 * hostapd_eid_vht_capabilities(struct hostapd_data *hapd, u8 *eid, u32 nsts)
 
 	/* Supported MCS set comes from hw */
 	os_memcpy(&cap->vht_supported_mcs_set, mode->vht_mcs_set, 8);
+#ifdef CONFIG_WFA
+	if (hapd->iconf->rx_ss_support == 1)
+		cap->vht_supported_mcs_set.rx_map = cap->vht_supported_mcs_set.tx_map = host_to_le16(0xfffe);
+	else if (hapd->iconf->rx_ss_support == 2)
+		cap->vht_supported_mcs_set.rx_map = cap->vht_supported_mcs_set.tx_map = host_to_le16(0xfffa);
+	else if (hapd->iconf->rx_ss_support == 3)
+		cap->vht_supported_mcs_set.rx_map = cap->vht_supported_mcs_set.tx_map = host_to_le16(0xffea);
+#endif
 
 #ifdef CONFIG_TESTING_OPTIONS
 	/* Enable VHT Extened NSS BW Capable for 160M */
@@ -102,6 +110,9 @@ u8 * hostapd_eid_vht_operation(struct hostapd_data *hapd, u8 *eid)
 
 #ifdef CONFIG_IEEE80211BE
 	if (punct_bitmap) {
+		oper_chwidth = hostapd_get_oper_chwidth(hapd->iconf);
+		seg0 = hostapd_get_oper_centr_freq_seg0_idx(hapd->iconf);
+		seg1 = hostapd_get_oper_centr_freq_seg1_idx(hapd->iconf);
 		punct_update_legacy_bw(punct_bitmap,
 				       hapd->iconf->channel,
 				       &oper_chwidth, &seg0, &seg1);

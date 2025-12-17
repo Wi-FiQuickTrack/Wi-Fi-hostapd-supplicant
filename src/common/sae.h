@@ -59,11 +59,13 @@ struct sae_temporary_data {
 	struct crypto_bignum *order_buf;
 	struct wpabuf *anti_clogging_token;
 	char *pw_id;
+	char *parsed_pw_id;
 	int vlan_id;
 	u8 bssid[ETH_ALEN];
 	struct wpabuf *own_rejected_groups;
 	struct wpabuf *peer_rejected_groups;
 	unsigned int own_addr_higher:1;
+	unsigned int try_other_password:1;
 
 #ifdef CONFIG_SAE_PK
 	u8 kek[SAE_MAX_HASH_LEN];
@@ -84,6 +86,8 @@ struct sae_temporary_data {
 #endif /* CONFIG_SAE_PK */
 
 	struct os_reltime disabled_until;
+
+	const void *used_pw;
 };
 
 struct sae_pt {
@@ -120,6 +124,7 @@ struct sae_data {
 	u16 rc; /* protocol instance variable: Rc (received send-confirm) */
 	unsigned int h2e:1;
 	unsigned int pk:1;
+	unsigned int no_pw_id:1;
 	struct sae_temporary_data *tmp;
 };
 
@@ -146,7 +151,8 @@ u16 sae_group_allowed(struct sae_data *sae, int *allowed_groups, u16 group);
 const char * sae_state_txt(enum sae_state state);
 size_t sae_ecc_prime_len_2_hash_len(size_t prime_len);
 size_t sae_ffc_prime_len_2_hash_len(size_t prime_len);
-struct sae_pt * sae_derive_pt(int *groups, const u8 *ssid, size_t ssid_len,
+struct sae_pt * sae_derive_pt(const int *groups,
+			      const u8 *ssid, size_t ssid_len,
 			      const u8 *password, size_t password_len,
 			      const char *identifier);
 struct crypto_ec_point *

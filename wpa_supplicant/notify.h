@@ -17,6 +17,8 @@ struct wps_event_fail;
 struct tls_cert_data;
 struct wpa_cred;
 struct rsn_pmksa_cache_entry;
+enum nan_de_reason;
+enum nan_service_protocol_type;
 
 int wpas_notify_supplicant_initialized(struct wpa_global *global);
 void wpas_notify_supplicant_deinitialized(struct wpa_global *global);
@@ -30,6 +32,7 @@ void wpas_notify_auth_status_code(struct wpa_supplicant *wpa_s);
 void wpas_notify_assoc_status_code(struct wpa_supplicant *wpa_s);
 void wpas_notify_roam_time(struct wpa_supplicant *wpa_s);
 void wpas_notify_roam_complete(struct wpa_supplicant *wpa_s);
+void wpas_notify_scan_in_progress_6ghz(struct wpa_supplicant *wpa_s);
 void wpas_notify_session_length(struct wpa_supplicant *wpa_s);
 void wpas_notify_bss_tm_status(struct wpa_supplicant *wpa_s);
 void wpas_notify_network_changed(struct wpa_supplicant *wpa_s);
@@ -153,6 +156,11 @@ void wpas_notify_network_type_changed(struct wpa_supplicant *wpa_s,
 void wpas_notify_p2p_invitation_received(struct wpa_supplicant *wpa_s,
 					 const u8 *sa, const u8 *go_dev_addr,
 					 const u8 *bssid, int id, int op_freq);
+void wpas_notify_p2p_bootstrap_req(struct wpa_supplicant *wpa_s,
+				   const u8 *src, u16 bootstrap_method);
+void wpas_notify_p2p_bootstrap_rsp(struct wpa_supplicant *wpa_s,
+				   const u8 *src, int status,
+				   u16 bootstrap_method);
 void wpas_notify_mesh_group_started(struct wpa_supplicant *wpa_s,
 				    struct wpa_ssid *ssid);
 void wpas_notify_mesh_group_removed(struct wpa_supplicant *wpa_s,
@@ -175,5 +183,26 @@ void wpas_notify_pmk_cache_added(struct wpa_supplicant *wpa_s,
 void wpas_notify_signal_change(struct wpa_supplicant *wpa_s);
 void wpas_notify_hs20_t_c_acceptance(struct wpa_supplicant *wpa_s,
 				     const char *url);
+void wpas_notify_nan_discovery_result(struct wpa_supplicant *wpa_s,
+				      enum nan_service_protocol_type
+				      srv_proto_type,
+				      int subscribe_id, int peer_publish_id,
+				      const u8 *peer_addr,
+				      bool fsd, bool fsd_gas,
+				      const u8 *ssi, size_t ssi_len);
+void wpas_notify_nan_replied(struct wpa_supplicant *wpa_s,
+			     enum nan_service_protocol_type srv_proto_type,
+			     int publish_id, int peer_subscribe_id,
+			     const u8 *peer_addr,
+			     const u8 *ssi, size_t ssi_len);
+void wpas_notify_nan_receive(struct wpa_supplicant *wpa_s, int id,
+			     int peer_instance_id, const u8 *peer_addr,
+			     const u8 *ssi, size_t ssi_len);
+void wpas_notify_nan_publish_terminated(struct wpa_supplicant *wpa_s,
+					int publish_id,
+					enum nan_de_reason reason);
+void wpas_notify_nan_subscribe_terminated(struct wpa_supplicant *wpa_s,
+					  int subscribe_id,
+					  enum nan_de_reason reason);
 
 #endif /* NOTIFY_H */

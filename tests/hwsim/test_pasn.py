@@ -569,7 +569,7 @@ def pasn_fils_setup(wpas, apdev, params, key_mgmt):
     params['erp_domain'] = 'example.com'
     params['fils_realm'] = 'example.com'
     params['disable_pmksa_caching'] = '1'
-    hapd = hostapd.add_ap(apdev[0]['ifname'], params)
+    hapd = hostapd.add_ap(apdev[0], params)
 
     id = wpas.connect("fils", key_mgmt=key_mgmt,
                       eap="PSK", identity="psk.user@example.com",
@@ -965,8 +965,7 @@ def test_pasn_owe_kdk_secure_ltf(dev, apdev):
     wpas = WpaSupplicant(global_iface='/tmp/wpas-wlan5')
     wpas.interface_add("wlan5", drv_params="secure_ltf=1")
     check_pasn_capab(wpas)
-    if "OWE" not in wpas.get_capability("key_mgmt"):
-        raise HwsimSkip("OWE not supported")
+    check_owe_capab(wpas)
 
     wpas.connect("owe", key_mgmt="OWE", ieee80211w="2", scan_freq="2412")
 
@@ -996,8 +995,7 @@ def test_pasn_owe_tm_kdk_secure_ltf(dev, apdev):
     wpas = WpaSupplicant(global_iface='/tmp/wpas-wlan5')
     wpas.interface_add("wlan5", drv_params="secure_ltf=1")
     check_pasn_capab(wpas)
-    if "OWE" not in wpas.get_capability("key_mgmt"):
-        raise HwsimSkip("OWE not supported")
+    check_owe_capab(wpas)
     wpas.flush_scan_cache()
 
     wpas.scan_for_bss(bssid, freq="2412")

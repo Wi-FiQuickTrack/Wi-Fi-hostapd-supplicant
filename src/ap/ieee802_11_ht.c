@@ -25,6 +25,9 @@ u8 * hostapd_eid_ht_capabilities(struct hostapd_data *hapd, u8 *eid)
 {
 	struct ieee80211_ht_capabilities *cap;
 	u8 *pos = eid;
+#ifdef CONFIG_WFA
+	u32 ht_rx_mcs_set = 0;
+#endif
 
 	if (!hapd->iconf->ieee80211n || !hapd->iface->current_mode ||
 	    hapd->conf->disable_11n || is_6ghz_op_class(hapd->iconf->op_class))
@@ -39,6 +42,17 @@ u8 * hostapd_eid_ht_capabilities(struct hostapd_data *hapd, u8 *eid)
 	cap->a_mpdu_params = hapd->iface->current_mode->a_mpdu_params;
 	os_memcpy(cap->supported_mcs_set, hapd->iface->current_mode->mcs_set,
 		  16);
+#ifdef CONFIG_WFA
+	/* Rx SS Override */
+	if (hapd->iconf->rx_ss_support == 1)
+		ht_rx_mcs_set = host_to_le32(0xff);
+	else if (hapd->iconf->rx_ss_support == 2)
+		ht_rx_mcs_set = host_to_le32(0xffff);
+	else if (hapd->iconf->rx_ss_support == 3)
+		ht_rx_mcs_set = host_to_le32(0xffffff);
+	if (ht_rx_mcs_set)
+		os_memcpy(cap->supported_mcs_set, &ht_rx_mcs_set, 4);
+#endif
 
 	/* TODO: ht_extended_capabilities (now fully disabled) */
 	/* TODO: tx_bf_capability_info (now fully disabled) */
@@ -79,6 +93,51 @@ u8 * hostapd_eid_ht_capabilities(struct hostapd_data *hapd, u8 *eid)
 }
 
 
+static void set_ht_param(struct hostapd_data *hapd,
+			 struct ieee80211_ht_operation *oper)
+{
+	int secondary_channel = hapd->iconf->secondary_channel;
+#ifdef CONFIG_IEEE80211BE
+	enum oper_chan_width chwidth = hostapd_get_oper_chwidth(hapd->iconf);
+	u16 bw = 0, punct_bitmap = hostapd_get_punct_bitmap(hapd);
+	u8 offset, chan_bit_pos;
+
+	switch (chwidth) {
+	case CONF_OPER_CHWIDTH_80MHZ:
+		bw = 80;
+		offset = 6;
+		break;
+	case CONF_OPER_CHWIDTH_160MHZ:
+		bw = 160;
+		offset = 14;
+		break;
+	case CONF_OPER_CHWIDTH_320MHZ:
+		bw = 320;
+		offset = 30;
+		break;
+	default:
+		goto no_update;
+	}
+
+	chan_bit_pos = (hapd->iconf->channel -
+			hostapd_get_oper_centr_freq_seg0_idx(hapd->iconf) +
+			offset) / 4;
+	/* Check if secondary channel is punctured */
+	if (bw >= 80 && punct_bitmap && secondary_channel &&
+	    (punct_bitmap & BIT(chan_bit_pos + secondary_channel)))
+		return; /* Do not indicate punctured secondary channel for HT */
+no_update:
+#endif /* CONFIG_IEEE80211BE */
+
+	if (secondary_channel == 1)
+		oper->ht_param |= HT_INFO_HT_PARAM_SECONDARY_CHNL_ABOVE |
+			HT_INFO_HT_PARAM_STA_CHNL_WIDTH;
+	if (secondary_channel == -1)
+		oper->ht_param |= HT_INFO_HT_PARAM_SECONDARY_CHNL_BELOW |
+			HT_INFO_HT_PARAM_STA_CHNL_WIDTH;
+}
+
+
 u8 * hostapd_eid_ht_operation(struct hostapd_data *hapd, u8 *eid)
 {
 	struct ieee80211_ht_operation *oper;
@@ -96,12 +155,7 @@ u8 * hostapd_eid_ht_operation(struct hostapd_data *hapd, u8 *eid)
 
 	oper->primary_chan = hapd->iconf->channel;
 	oper->operation_mode = host_to_le16(hapd->iface->ht_op_mode);
-	if (hapd->iconf->secondary_channel == 1)
-		oper->ht_param |= HT_INFO_HT_PARAM_SECONDARY_CHNL_ABOVE |
-			HT_INFO_HT_PARAM_STA_CHNL_WIDTH;
-	if (hapd->iconf->secondary_channel == -1)
-		oper->ht_param |= HT_INFO_HT_PARAM_SECONDARY_CHNL_BELOW |
-			HT_INFO_HT_PARAM_STA_CHNL_WIDTH;
+	set_ht_param(hapd, oper);
 
 	pos += sizeof(*oper);
 
@@ -417,6 +471,7 @@ void ht40_intolerant_remove(struct hostapd_iface *iface, struct sta_info *sta)
 	iface->num_sta_ht40_intolerant--;
 
 	if (iface->num_sta_ht40_intolerant == 0 &&
+	    iface->conf->obss_interval &&
 	    (iface->conf->ht_capab & HT_CAP_INFO_SUPP_CHANNEL_WIDTH_SET) &&
 	    (iface->drv_flags & WPA_DRIVER_FLAGS_HT_2040_COEX)) {
 		unsigned int delay_time = OVERLAPPING_BSS_TRANS_DELAY_FACTOR *

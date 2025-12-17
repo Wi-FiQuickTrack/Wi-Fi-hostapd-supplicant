@@ -26,6 +26,66 @@
 #include "pasn_common.h"
 
 
+struct rsn_pmksa_cache * pasn_initiator_pmksa_cache_init(void)
+{
+	return pmksa_cache_init(NULL, NULL, NULL, NULL, NULL);
+}
+
+
+void pasn_initiator_pmksa_cache_deinit(struct rsn_pmksa_cache *pmksa)
+{
+	return pmksa_cache_deinit(pmksa);
+}
+
+
+int pasn_initiator_pmksa_cache_add(struct rsn_pmksa_cache *pmksa,
+				   const u8 *own_addr, const u8 *bssid,
+				   const u8 *pmk,
+				   size_t pmk_len, const u8 *pmkid)
+{
+	if (pmksa_cache_add(pmksa, pmk, pmk_len, pmkid, NULL, 0, bssid,
+			    own_addr, NULL, WPA_KEY_MGMT_SAE, NULL))
+		return 0;
+	return -1;
+}
+
+
+void pasn_initiator_pmksa_cache_remove(struct rsn_pmksa_cache *pmksa,
+				       const u8 *bssid)
+{
+	struct rsn_pmksa_cache_entry *entry;
+
+	entry = pmksa_cache_get(pmksa, bssid, NULL, NULL, NULL, 0);
+	if (!entry)
+		return;
+
+	pmksa_cache_remove(pmksa, entry);
+}
+
+
+int pasn_initiator_pmksa_cache_get(struct rsn_pmksa_cache *pmksa,
+				   const u8 *bssid, u8 *pmkid, u8 *pmk,
+				   size_t *pmk_len)
+{
+	struct rsn_pmksa_cache_entry *entry;
+
+	entry = pmksa_cache_get(pmksa, bssid, NULL, NULL, NULL, 0);
+	if (entry) {
+		os_memcpy(pmkid, entry->pmkid, PMKID_LEN);
+		os_memcpy(pmk, entry->pmk, entry->pmk_len);
+		*pmk_len = entry->pmk_len;
+		return 0;
+	}
+	return -1;
+}
+
+
+void pasn_initiator_pmksa_cache_flush(struct rsn_pmksa_cache *pmksa)
+{
+	return pmksa_cache_flush(pmksa, NULL, NULL, 0, false);
+}
+
+
 void pasn_set_initiator_pmksa(struct pasn_data *pasn,
 			      struct rsn_pmksa_cache *pmksa)
 {
@@ -66,7 +126,7 @@ static struct wpabuf * wpas_pasn_wd_sae_commit(struct pasn_data *pasn)
 	wpabuf_put_le16(buf, 1);
 	wpabuf_put_le16(buf, WLAN_STATUS_SAE_HASH_TO_ELEMENT);
 
-	sae_write_commit(&pasn->sae, buf, NULL, 0);
+	sae_write_commit(&pasn->sae, buf, NULL, NULL);
 	pasn->sae.state = SAE_COMMITTED;
 
 	return buf;
@@ -115,8 +175,8 @@ static int wpas_pasn_wd_sae_rx(struct pasn_data *pasn, struct wpabuf *wd)
 		return -1;
 	}
 
-	res = sae_parse_commit(&pasn->sae, data + 6, len - 6, NULL, 0, groups,
-			       1, NULL);
+	res = sae_parse_commit(&pasn->sae, data + 6, len - 6, NULL, NULL,
+			       groups, 1, NULL);
 	if (res != WLAN_STATUS_SUCCESS) {
 		wpa_printf(MSG_DEBUG, "PASN: SAE failed parsing commit");
 		return -1;
@@ -439,7 +499,7 @@ static int wpas_pasn_wd_fils_rx(struct pasn_data *pasn, struct wpabuf *wd)
 					    pasn->pmk_len, pasn->fils.erp_pmkid,
 					    NULL, 0, pasn->peer_addr,
 					    pasn->own_addr, NULL,
-					    pasn->akmp, 0);
+					    pasn->akmp, NULL);
 
 	pasn->fils.completed = true;
 	return 0;
@@ -587,7 +647,10 @@ static struct wpabuf * wpas_pasn_build_auth_1(struct pasn_data *pasn,
 	if (wpa_pasn_add_wrapped_data(buf, wrapped_data_buf) < 0)
 		goto fail;
 
-	wpa_pasn_add_rsnxe(buf, pasn->rsnxe_capab);
+	if (pasn->rsnxe_ie)
+		wpabuf_put_data(buf, pasn->rsnxe_ie, 2 + pasn->rsnxe_ie[1]);
+	else
+		wpa_pasn_add_rsnxe(buf, pasn->rsnxe_capab);
 
 	wpa_pasn_add_extra_ies(buf, pasn->extra_ies, pasn->extra_ies_len);
 
@@ -620,7 +683,8 @@ static struct wpabuf * wpas_pasn_build_auth_3(struct pasn_data *pasn)
 {
 	struct wpabuf *buf, *wrapped_data_buf = NULL;
 	u8 mic[WPA_PASN_MAX_MIC_LEN];
-	u8 mic_len, data_len;
+	u8 mic_len;
+	size_t data_len;
 	const u8 *data;
 	u8 *ptr;
 	u8 wrapped_data;
@@ -653,6 +717,11 @@ static struct wpabuf * wpas_pasn_build_auth_3(struct pasn_data *pasn)
 		goto fail;
 	wpabuf_free(wrapped_data_buf);
 	wrapped_data_buf = NULL;
+
+	if (pasn->prepare_data_element && pasn->cb_ctx)
+		pasn->prepare_data_element(pasn->cb_ctx, pasn->peer_addr);
+
+	wpa_pasn_add_extra_ies(buf, pasn->extra_ies, pasn->extra_ies_len);
 
 	/* Add the MIC */
 	mic_len = pasn_mic_len(pasn->akmp, pasn->cipher);
@@ -747,6 +816,7 @@ void wpa_pasn_reset(struct pasn_data *pasn)
 	pasn->derive_kdk = false;
 	pasn->rsn_ie = NULL;
 	pasn->rsn_ie_len = 0;
+	os_free(pasn->rsnxe_ie);
 	pasn->rsnxe_ie = NULL;
 	pasn->custom_pmkid_valid = false;
 
@@ -754,6 +824,9 @@ void wpa_pasn_reset(struct pasn_data *pasn)
 		os_free((u8 *) pasn->extra_ies);
 		pasn->extra_ies = NULL;
 	}
+
+	wpabuf_free(pasn->frame);
+	pasn->frame = NULL;
 }
 
 
@@ -842,7 +915,7 @@ static int wpas_pasn_set_pmk(struct pasn_data *pasn,
 						    pasn->sae.pmkid,
 						    NULL, 0, pasn->peer_addr,
 						    pasn->own_addr, NULL,
-						    pasn->akmp, 0);
+						    pasn->akmp, NULL);
 		return 0;
 	}
 #endif /* CONFIG_SAE */
@@ -924,16 +997,20 @@ static int wpas_pasn_send_auth_1(struct pasn_data *pasn, const u8 *own_addr,
 		goto fail;
 	}
 
+	wpabuf_free(pasn->frame);
+	pasn->frame = NULL;
+
 	ret = pasn->send_mgmt(pasn->cb_ctx,
 			      wpabuf_head(frame), wpabuf_len(frame), 0,
 			      pasn->freq, 1000);
 
-	wpabuf_free(frame);
 	if (ret) {
 		wpa_printf(MSG_DEBUG, "PASN: Failed sending 1st auth frame");
+		wpabuf_free(frame);
 		goto fail;
 	}
 
+	pasn->frame = frame;
 	return 0;
 
 fail:
@@ -1233,7 +1310,7 @@ int wpa_pasn_auth_rx(struct pasn_data *pasn, const u8 *data, size_t len,
 			      pasn->own_addr, pasn->peer_addr,
 			      wpabuf_head(secret), wpabuf_len(secret),
 			      &pasn->ptk, pasn->akmp, pasn->cipher,
-			      pasn->kdk_len);
+			      pasn->kdk_len, pasn->kek_len);
 	if (ret) {
 		wpa_printf(MSG_DEBUG, "PASN: Failed to derive PTK");
 		goto fail;
@@ -1323,21 +1400,30 @@ int wpa_pasn_auth_rx(struct pasn_data *pasn, const u8 *data, size_t len,
 
 	wpa_printf(MSG_DEBUG, "PASN: Success verifying Authentication frame");
 
+	if (pasn_parse_encrypted_data(pasn, data, len) < 0) {
+		wpa_printf(MSG_DEBUG, "PASN: Encrypted data processing failed");
+		goto fail;
+	}
+
 	frame = wpas_pasn_build_auth_3(pasn);
 	if (!frame) {
 		wpa_printf(MSG_DEBUG, "PASN: Failed building 3rd auth frame");
 		goto fail;
 	}
 
+	wpabuf_free(pasn->frame);
+	pasn->frame = NULL;
+
 	ret = pasn->send_mgmt(pasn->cb_ctx,
 			      wpabuf_head(frame), wpabuf_len(frame), 0,
 			      pasn->freq, 100);
-	wpabuf_free(frame);
 	if (ret) {
 		wpa_printf(MSG_DEBUG, "PASN: Failed sending 3st auth frame");
+		wpabuf_free(frame);
 		goto fail;
 	}
 
+	pasn->frame = frame;
 	wpa_printf(MSG_DEBUG, "PASN: Success sending last frame. Store PTK");
 
 	pasn->status = WLAN_STATUS_SUCCESS;

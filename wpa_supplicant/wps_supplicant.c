@@ -226,7 +226,7 @@ static void wpas_wps_security_workaround(struct wpa_supplicant *wpa_s,
 
 	wpa_printf(MSG_DEBUG, "WPS: AP found from BSS table");
 
-	ie = wpa_bss_get_ie(bss, WLAN_EID_RSN);
+	ie = wpa_bss_get_rsne(wpa_s, bss, ssid, false);
 	if (ie && wpa_parse_wpa_ie(ie, 2 + ie[1], &adv) == 0) {
 		wpa2 = 1;
 		if (adv.pairwise_cipher & WPA_CIPHER_CCMP)
@@ -1394,7 +1394,7 @@ int wpas_wps_cancel(struct wpa_supplicant *wpa_s)
 		wpa_printf(MSG_DEBUG, "WPS: Cancel operation - cancel scan");
 		wpa_supplicant_cancel_scan(wpa_s);
 		wpas_clear_wps(wpa_s);
-	} else if (wpa_s->wpa_state >= WPA_ASSOCIATED) {
+	} else if (wpa_s->wpa_state >= WPA_ASSOCIATING) {
 		wpa_printf(MSG_DEBUG, "WPS: Cancel operation - "
 			   "deauthenticate");
 		wpa_s->own_disconnect_req = 1;

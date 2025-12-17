@@ -1256,7 +1256,8 @@ def test_sae_proto_hostapd_status_127(dev, apdev):
 
 def test_sae_proto_hostapd_valid_commit_after_fail(dev, apdev):
     """SAE protocol testing with hostapd and valid commit after failed one"""
-    params = hostapd.wpa2_params(ssid="test-sae", passphrase="foofoofoo")
+    params = hostapd.wpa2_params(ssid="test-sae")
+    params['sae_password'] = ["foofoofoo", "another|id=pw id"]
     params['wpa_key_mgmt'] = 'SAE'
     params['sae_groups'] = "19"
     hapd = hostapd.add_ap(apdev[0], params)
@@ -1801,6 +1802,29 @@ def test_sae_password_long(dev, apdev):
     dev[0].connect("test-sae", sae_password=100*"A", key_mgmt="SAE",
                    scan_freq="2412")
 
+def test_sae_password_multiple(dev, apdev):
+    """SAE with multiple default password entries"""
+    check_sae_capab(dev[0])
+    check_sae_capab(dev[1])
+    check_sae_capab(dev[2])
+    params = hostapd.wpa3_params(ssid="test-sae",
+                                 password=["owner", "iot", "guest"])
+    params['sae_track_password'] = "10"
+    params['sae_confirm_immediate'] = '1'
+    hapd = hostapd.add_ap(apdev[0], params)
+
+    dev[0].set("sae_groups", "")
+    dev[0].connect("test-sae", sae_password="owner", key_mgmt="SAE",
+                   ieee80211w="2", scan_freq="2412")
+
+    dev[1].set("sae_groups", "")
+    dev[1].connect("test-sae", sae_password="iot", key_mgmt="SAE",
+                   ieee80211w="2", scan_freq="2412")
+
+    dev[2].set("sae_groups", "")
+    dev[2].connect("test-sae", sae_password="guest", key_mgmt="SAE",
+                   ieee80211w="2", scan_freq="2412")
+
 def test_sae_connect_cmd(dev, apdev):
     """SAE with connect command"""
     wpas = WpaSupplicant(global_iface='/tmp/wpas-wlan5')
@@ -1895,9 +1919,12 @@ def test_sae_password_id_pwe_looping(dev, apdev):
         dev[0].set("sae_pwe", "3")
         dev[0].connect("test-sae", sae_password="secret",
                        sae_password_id="pw id",
-                       key_mgmt="SAE", scan_freq="2412")
-        if dev[0].get_status_field("ssid_verified") == "1":
-            raise Exception("Unexpected ssid_verified=1 in STATUS")
+                       key_mgmt="SAE", scan_freq="2412", wait_connect=False)
+        ev = dev[0].wait_event(["CTRL-EVENT-SAE-UNKNOWN-PASSWORD-IDENTIFIER"],
+                               timeout=10)
+        dev[0].request("DISCONNECT")
+        if ev is None:
+            raise Exception("Unknown password identifier not reported")
     finally:
         dev[0].set("sae_pwe", "0")
 
@@ -2002,7 +2029,10 @@ def build_sae_commit(bssid, addr, group=21, token=None):
     return frame
 
 def sae_rx_commit_token_req(sock, radiotap, send_two=False):
-    msg = sock.recv(1500)
+    try:
+        msg = sock.recv(1500)
+    except TimeoutError:
+        return False
     ver, pad, length, present = struct.unpack('<BBHL', msg[0:8])
     frame = msg[length:]
     if len(frame) < 4:
@@ -2018,6 +2048,8 @@ def sae_rx_commit_token_req(sock, radiotap, send_two=False):
     bssid = frame[12:18]
     body = frame[20:]
 
+    if len(body) < 8:
+        return False
     alg, seq, status, group = struct.unpack('<HHHH', body[0:8])
     if alg != 3 or seq != 1 or status != 76:
         return False
@@ -2031,6 +2063,13 @@ def sae_rx_commit_token_req(sock, radiotap, send_two=False):
 
 def run_sae_anti_clogging_during_attack(dev, apdev):
     check_sae_capab(dev[0])
+
+    # Reset apdev[1] into known state before using it as monitor interface.
+    # Issues were seen when the previous test case used it as a 5 GHz AP.
+    params = {"ssid": "monitor"}
+    hapd2 = hostapd.add_ap(apdev[1], params)
+    hapd2.disable()
+
     params = hostapd.wpa2_params(ssid="test-sae", passphrase="12345678")
     params['wpa_key_mgmt'] = 'SAE'
     params['sae_groups'] = '21'
@@ -2081,18 +2120,28 @@ def run_sae_anti_clogging_during_attack(dev, apdev):
     count = 0
     connected0 = False
     connected1 = False
-    for i in range(1000):
+    i = 0
+    start = os.times()[4]
+    now = os.times()[4]
+    while i < 1000 or (i < 10000 and (now - start < 30)):
+        i += 1
+        if i % 1000 == 0:
+            logger.info("i=%d count=%d" % (i, count))
         if sae_rx_commit_token_req(sock, radiotap):
             count += 1
             addr = binascii.unhexlify("f202%08x" % i)
             frame = build_sae_commit(bssid, addr)
             sock.send(radiotap + frame)
         while dev[0].mon.pending():
+            if start is None:
+                start = os.times()[4]
             ev = dev[0].mon.recv()
             logger.debug("EV0: " + ev)
             if "CTRL-EVENT-CONNECTED" in ev:
                 connected0 = True
         while dev[1].mon.pending():
+            if start is None:
+                start = os.times()[4]
             ev = dev[1].mon.recv()
             logger.debug("EV1: " + ev)
             if "CTRL-EVENT-CONNECTED" in ev:
@@ -2100,6 +2149,8 @@ def run_sae_anti_clogging_during_attack(dev, apdev):
         if connected0 and connected1:
             break
         time.sleep(0.00000001)
+        now = os.times()[4]
+    logger.info("Total number of iterations: %d" % i)
     if not connected0:
         raise Exception("Real station(0) did not get connected")
     if not connected1:
@@ -2215,11 +2266,13 @@ def test_sae_pwe_group_24(dev, apdev):
     """SAE PWE derivation options with group 24"""
     run_sae_pwe_group(dev, apdev, 24)
 
-def start_sae_pwe_ap(apdev, group, sae_pwe):
+def start_sae_pwe_ap(apdev, group, sae_pwe, pmf=False):
     params = hostapd.wpa2_params(ssid="sae-pwe", passphrase="12345678")
     params['wpa_key_mgmt'] = 'SAE'
     params['sae_groups'] = str(group)
     params['sae_pwe'] = str(sae_pwe)
+    if pmf:
+        params['ieee80211w'] = '2'
     return hostapd.add_ap(apdev, params)
 
 def run_sae_pwe_group(dev, apdev, group):
@@ -2298,6 +2351,34 @@ def test_sae_pwe_loop_only_ap(dev, apdev):
     finally:
         dev[0].set("sae_groups", "")
         dev[0].set("sae_pwe", "0")
+
+def test_sae_pwe_both(dev, apdev):
+    """SAE PWE derivation with both options"""
+    check_sae_capab(dev[0])
+    check_sae_capab(dev[1])
+    hapd = start_sae_pwe_ap(apdev[0], 19, 2, pmf=True)
+    try:
+        dev[0].set("sae_groups", "")
+        dev[0].set("sae_pwe", "1")
+        dev[0].connect("sae-pwe", psk="12345678", key_mgmt="SAE",
+                       ieee80211w="2", scan_freq="2412")
+        dev[1].set("sae_groups", "")
+        dev[1].connect("sae-pwe", psk="12345678", key_mgmt="SAE",
+                       ieee80211w="2", scan_freq="2412")
+        if dev[0].get_status_field("sae_h2e") != "1":
+            raise Exception("SAE H2E was not used on dev[0]")
+        if dev[1].get_status_field("sae_h2e") != "0":
+            raise Exception("SAE H2E was used on dev[1]")
+    finally:
+        dev[0].set("sae_groups", "")
+        dev[0].set("sae_pwe", "0")
+        dev[1].set("sae_groups", "")
+
+    dev[0].connect("sae-pwe", psk="12345678", key_mgmt="SAE", scan_freq="2412",
+                   wait_connect=False)
+    ev = dev[0].wait_event(["CTRL-EVENT-NETWORK-NOT-FOUND"], timeout=10)
+    if ev is None:
+        raise Exception("No indication of mismatching network seen")
 
 def test_sae_h2e_rejected_groups(dev, apdev):
     """SAE H2E and rejected groups indication"""
@@ -3273,3 +3354,68 @@ def test_sae_ssid_protection(dev, apdev):
 
     if dev[0].get_status_field("ssid_verified") != "1":
         raise Exception("ssid_verified=1 not in STATUS")
+
+def test_sae_eapol_key_reserved_random(dev, apdev):
+    """SAE with EAPOL-Key Reserved field set to random value"""
+    check_sae_capab(dev[0])
+    params = hostapd.wpa2_params(ssid="test-sae", passphrase="12345678")
+    params['wpa_key_mgmt'] = 'SAE'
+    params['eapol_key_reserved_random'] = '1'
+    hapd = hostapd.add_ap(apdev[0], params)
+
+    dev[0].set("sae_groups", "")
+    dev[0].connect("test-sae", psk="12345678", key_mgmt="SAE",
+                   scan_freq="2412")
+
+def test_sae_eapol_key_2_reserved_key_info(dev, apdev):
+    """SAE with EAPOL-Key msg 2/4 Key Info field reserved bits set"""
+    check_sae_capab(dev[0])
+    params = hostapd.wpa3_params(ssid="test-sae", password="12345678")
+    hapd = hostapd.add_ap(apdev[0], params)
+
+    dev[0].set("eapol_2_key_info_set_mask", "c000")
+    dev[0].set("sae_groups", "")
+    dev[0].connect("test-sae", psk="12345678", key_mgmt="SAE", ieee80211w="2",
+                   scan_freq="2412")
+
+def test_sae_long_rsnxe(dev, apdev):
+    """RSNXE extensibility"""
+    check_sae_capab(dev[0])
+
+    rsnxe = "F4FF2F0000000000000000000000000000FF" + 239*"EE"
+
+    params = hostapd.wpa3_params(ssid="sae-pwe", password="12345678")
+    params['sae_pwe'] = "1"
+    params['rsnxe_override'] = rsnxe
+    hapd = hostapd.add_ap(apdev[0], params)
+
+    dev[0].set("sae_groups", "")
+    dev[0].set("rsnxe_override_assoc", rsnxe)
+    dev[0].set("rsnxe_override_eapol", rsnxe)
+    try:
+        dev[0].set("sae_pwe", "2")
+        dev[0].connect("sae-pwe", psk="12345678", key_mgmt="SAE",
+                       scan_freq="2412", ieee80211w="2")
+        if dev[0].get_status_field("sae_h2e") != "1":
+            raise Exception("SAE H2E was not used")
+    finally:
+        dev[0].set("sae_groups", "")
+        dev[0].set("sae_pwe", "0")
+
+def test_sae_dump_beacon(dev, apdev):
+    """SAE and DUMP_BEACON"""
+    check_sae_capab(dev[0])
+    params = hostapd.wpa3_params(ssid="test-sae", password="12345678")
+    hapd = hostapd.add_ap(apdev[0], params)
+
+    dev[0].set("sae_groups", "")
+    dev[0].connect("test-sae", sae_password="12345678", key_mgmt="SAE",
+                   ieee80211w="2", scan_freq="2412")
+    hapd.wait_sta()
+    res = hapd.request("DUMP_BEACON")
+    if "FAIL" in res:
+        raise Exception("DUMP_BEACON failed")
+    logger.info("DUMP_BEACON: " + res)
+
+    # Make sure there is enough time to capture at least one Beacon frame
+    time.sleep(0.2)

@@ -473,11 +473,12 @@ DBusMessage * wpas_dbus_handler_p2p_group_add(DBusMessage *message,
 		if (ssid == NULL || ssid->disabled != 2)
 			goto inv_args;
 
-		if (wpas_p2p_group_add_persistent(wpa_s, ssid, 0, freq, 0,
+		if (wpas_p2p_group_add_persistent(wpa_s, ssid, 0, freq, freq,
 						  freq2, ht40, vht,
 						  max_oper_chwidth, he, edmg,
 						  NULL, 0, 0, allow_6ghz,
-						  retry_limit, go_bssid)) {
+						  retry_limit, go_bssid, NULL,
+						  NULL, NULL, 0)) {
 			reply = wpas_dbus_error_unknown_error(
 				message,
 				"Failed to reinvoke a persistent group");
@@ -485,7 +486,7 @@ DBusMessage * wpas_dbus_handler_p2p_group_add(DBusMessage *message,
 		}
 	} else if (wpas_p2p_group_add(wpa_s, persistent_group, freq, freq2,
 				      ht40, vht, max_oper_chwidth, he, edmg,
-				      allow_6ghz))
+				      allow_6ghz, wpa_s->p2p2, wpa_s->p2p_mode))
 		goto inv_args;
 
 out:
@@ -706,7 +707,7 @@ DBusMessage * wpas_dbus_handler_p2p_connect(DBusMessage *message,
 	new_pin = wpas_p2p_connect(wpa_s, addr, pin, wps_method,
 				   persistent_group, 0, join, authorize_only,
 				   go_intent, freq, 0, -1, 0, 0, 0, 0, 0, 0,
-				   NULL, 0, false);
+				   NULL, 0, false, 0, 0, NULL, false);
 
 	if (new_pin >= 0) {
 		char npin[9];
@@ -866,7 +867,7 @@ DBusMessage * wpas_dbus_handler_p2p_invite(DBusMessage *message,
 			goto err;
 
 		if (wpas_p2p_invite(wpa_s, peer_addr, ssid, NULL, 0, 0, 0, 0, 0,
-				    0, 0, 0, false) < 0) {
+				    0, 0, 0, false, false) < 0) {
 			reply = wpas_dbus_error_unknown_error(
 				message,
 				"Failed to reinvoke a persistent group");
@@ -928,7 +929,7 @@ DBusMessage * wpas_dbus_handler_p2p_prov_disc_req(DBusMessage *message,
 	if (!wpa_s)
 		return wpas_dbus_error_no_p2p_mgmt_iface(message);
 
-	if (wpas_p2p_prov_disc(wpa_s, peer_addr, config_method,
+	if (wpas_p2p_prov_disc(wpa_s, peer_addr, config_method, 0,
 			       WPAS_P2P_PD_FOR_GO_NEG, NULL) < 0)
 		return wpas_dbus_error_unknown_error(message,
 				"Failed to send provision discovery request");

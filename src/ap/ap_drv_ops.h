@@ -49,7 +49,8 @@ int hostapd_sta_add(struct hostapd_data *hapd,
 		    size_t eht_capab_len,
 		    const struct ieee80211_he_6ghz_band_cap *he_6ghz_capab,
 		    u32 flags, u8 qosinfo, u8 vht_opmode, int supp_p2p_ps,
-		    int set, const u8 *link_addr, bool mld_link_sta);
+		    int set, const u8 *link_addr, bool mld_link_sta,
+		    u16 eml_cap);
 int hostapd_set_privacy(struct hostapd_data *hapd, int enabled);
 int hostapd_set_generic_elem(struct hostapd_data *hapd, const u8 *elem,
 			     size_t elem_len);
@@ -116,6 +117,11 @@ int hostapd_drv_send_action_addr3_ap(struct hostapd_data *hapd,
 				     unsigned int freq,
 				     unsigned int wait, const u8 *dst,
 				     const u8 *data, size_t len);
+int hostapd_drv_send_action_forced_addr3(struct hostapd_data *hapd,
+					 unsigned int freq,
+					 unsigned int wait, const u8 *dst,
+					 const u8 *a3,
+					 const u8 *data, size_t len);
 static inline void
 hostapd_drv_send_action_cancel_wait(struct hostapd_data *hapd)
 {
@@ -477,5 +483,14 @@ static inline int hostapd_drv_link_sta_remove(struct hostapd_data *hapd,
 }
 
 #endif /* CONFIG_IEEE80211BE */
+
+struct hostapd_multi_hw_info *
+hostapd_get_multi_hw_info(struct hostapd_data *hapd,
+			  unsigned int *num_multi_hws);
+
+int hostapd_drv_add_pmkid(struct hostapd_data *hapd,
+			  struct wpa_pmkid_params *params);
+int hostapd_add_pmkid(struct hostapd_data *hapd, const u8 *bssid, const u8 *pmk,
+		      size_t pmk_len, const u8 *pmkid, int akmp);
 
 #endif /* AP_DRV_OPS */

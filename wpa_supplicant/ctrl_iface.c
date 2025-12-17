@@ -564,6 +564,17 @@ static int wpa_supplicant_ctrl_iface_set(struct wpa_supplicant *wpa_s,
 		wpa_s->wps_er_specify_conn_mac = atoi(value);
 	} else if (os_strcasecmp(cmd, "disable_deauth_sa_query_timeout") == 0) {
 		wpa_s->disable_deauth_sa_query_timeout = atoi(value);
+	} else if (os_strcasecmp(cmd, "random_pmkid") == 0) {
+		int random_pmkid_cnt = atoi(value);
+		if (random_pmkid_cnt < 1 || random_pmkid_cnt > 11) {
+			ret = -1;
+			wpa_printf(MSG_DEBUG, "Invalid random_pmkid_cnt: %d", random_pmkid_cnt);
+		} else {
+			wpa_s->random_pmkid = atoi(value);
+			/* Populate value to wpa_sm if already associated. */
+			wpa_sm_set_param(wpa_s->wpa, WPA_PARAM_RANDOM_PMKID,
+					wpa_s->random_pmkid);
+		}
 #endif
 #ifdef CONFIG_WPS_TESTING
 	} else if (os_strcasecmp(cmd, "wps_version_number") == 0) {
@@ -835,6 +846,23 @@ static int wpa_supplicant_ctrl_iface_set(struct wpa_supplicant *wpa_s,
 			wpa_s->rsnxe_override_eapol = NULL;
 		else
 			wpa_s->rsnxe_override_eapol = wpabuf_parse_bin(value);
+	} else if (os_strcasecmp(cmd, "link_ies") == 0) {
+		int link_id = atoi(value);
+		char *pos;
+
+		if (link_id < 0 || link_id >= MAX_NUM_MLD_LINKS)
+			return -1;
+
+		pos = os_strchr(value, ':');
+		if (!pos)
+			return -1;
+		pos++;
+
+		wpabuf_free(wpa_s->link_ies[link_id]);
+		if (os_strcmp(value, "NULL") == 0)
+			wpa_s->link_ies[link_id] = NULL;
+		else
+			wpa_s->link_ies[link_id] = wpabuf_parse_bin(pos);
 	} else if (os_strcasecmp(cmd, "reject_btm_req_reason") == 0) {
 		wpa_s->reject_btm_req_reason = atoi(value);
 	} else if (os_strcasecmp(cmd, "get_pref_freq_list_override") == 0) {
@@ -891,6 +919,8 @@ static int wpa_supplicant_ctrl_iface_set(struct wpa_supplicant *wpa_s,
 	} else if (os_strcasecmp(cmd, "dpp_test") == 0) {
 		dpp_test = atoi(value);
 #endif /* CONFIG_DPP */
+	} else if (os_strcasecmp(cmd, "eapol_2_key_info_set_mask") == 0) {
+		wpa_s->eapol_2_key_info_set_mask = strtoul(value, NULL, 0x10);
 #endif /* CONFIG_TESTING_OPTIONS */
 #ifdef CONFIG_FILS
 	} else if (os_strcasecmp(cmd, "disable_fils") == 0) {
@@ -3022,14 +3052,6 @@ static char * wpa_supplicant_ie_txt(char *pos, char *end, const char *proto,
 	}
 #endif /* CONFIG_DPP */
 
-	if (data.key_mgmt & WPA_KEY_MGMT_OSEN) {
-		ret = os_snprintf(pos, end - pos, "%sOSEN",
-				  pos == start ? "" : "+");
-		if (os_snprintf_error(end - pos, ret))
-			return pos;
-		pos += ret;
-	}
-
 #ifdef CONFIG_SHA384
 	if (data.key_mgmt & WPA_KEY_MGMT_IEEE8021X_SHA384) {
 		ret = os_snprintf(pos, end - pos, "%sEAP-SHA384",
@@ -3107,7 +3129,7 @@ static int wpa_supplicant_ctrl_iface_scan_result(
 {
 	char *pos, *end;
 	int ret;
-	const u8 *ie, *ie2, *osen_ie, *p2p, *mesh, *owe, *rsnxe;
+	const u8 *ie, *ie2, *p2p, *mesh, *owe, *rsnxe;
 
 	mesh = wpa_bss_get_ie(bss, WLAN_EID_MESH_ID);
 	p2p = wpa_bss_get_vendor_ie(bss, P2P_IE_VENDOR_TYPE);
@@ -3129,12 +3151,12 @@ static int wpa_supplicant_ctrl_iface_scan_result(
 	ie = wpa_bss_get_vendor_ie(bss, WPA_IE_VENDOR_TYPE);
 	if (ie)
 		pos = wpa_supplicant_ie_txt(pos, end, "WPA", ie, 2 + ie[1]);
-	ie2 = wpa_bss_get_ie(bss, WLAN_EID_RSN);
+	ie2 = wpa_bss_get_rsne(wpa_s, bss, NULL, false);
 	if (ie2) {
 		pos = wpa_supplicant_ie_txt(pos, end, mesh ? "RSN" : "WPA2",
 					    ie2, 2 + ie2[1]);
 	}
-	rsnxe = wpa_bss_get_ie(bss, WLAN_EID_RSNX);
+	rsnxe = wpa_bss_get_rsnxe(wpa_s, bss, NULL, false);
 	if (ieee802_11_rsnx_capab(rsnxe, WLAN_RSNX_CAPAB_SAE_H2E)) {
 		ret = os_snprintf(pos, end - pos, "[SAE-H2E]");
 		if (os_snprintf_error(end - pos, ret))
@@ -3147,10 +3169,6 @@ static int wpa_supplicant_ctrl_iface_scan_result(
 			return -1;
 		pos += ret;
 	}
-	osen_ie = wpa_bss_get_vendor_ie(bss, OSEN_IE_VENDOR_TYPE);
-	if (osen_ie)
-		pos = wpa_supplicant_ie_txt(pos, end, "OSEN",
-					    osen_ie, 2 + osen_ie[1]);
 	owe = wpa_bss_get_vendor_ie(bss, OWE_IE_VENDOR_TYPE);
 	if (owe) {
 		ret = os_snprintf(pos, end - pos,
@@ -3160,7 +3178,7 @@ static int wpa_supplicant_ctrl_iface_scan_result(
 		pos += ret;
 	}
 	pos = wpa_supplicant_wps_ie_txt(wpa_s, pos, end, bss);
-	if (!ie && !ie2 && !osen_ie && (bss->caps & IEEE80211_CAP_PRIVACY)) {
+	if (!ie && !ie2 && (bss->caps & IEEE80211_CAP_PRIVACY)) {
 		ret = os_snprintf(pos, end - pos, "[WEP]");
 		if (os_snprintf_error(end - pos, ret))
 			return -1;
@@ -4470,14 +4488,6 @@ static int ctrl_iface_get_capability_key_mgmt(int res, bool strict,
 		pos += ret;
 	}
 #endif /* CONFIG_SHA256 */
-#ifdef CONFIG_HS20
-	if (key_mgmt & WPA_DRIVER_CAPA_KEY_MGMT_OSEN) {
-		ret = os_snprintf(pos, end - pos, " OSEN");
-		if (os_snprintf_error(end - pos, ret))
-			return pos - buf;
-		pos += ret;
-	}
-#endif /* CONFIG_HS20 */
 
 	return pos - buf;
 }
@@ -4970,6 +4980,28 @@ static int wpa_supplicant_ctrl_iface_get_capability(
 		return res;
 	}
 
+#ifdef CONFIG_P2P
+	if (os_strcmp(field, "p2p2") == 0) {
+		if (wpa_s->drv_flags2 & WPA_DRIVER_FLAGS2_P2P_FEATURE_V2)
+			res = os_snprintf(buf, buflen, "supported");
+		else
+			res = os_snprintf(buf, buflen, "not supported");
+		if (os_snprintf_error(buflen, res))
+			return -1;
+		return res;
+	}
+
+	if (os_strcmp(field, "pcc_mode") == 0) {
+		if (wpa_s->drv_flags2 & WPA_DRIVER_FLAGS2_P2P_FEATURE_PCC_MODE)
+			res = os_snprintf(buf, buflen, "supported");
+		else
+			res = os_snprintf(buf, buflen, "not supported");
+		if (os_snprintf_error(buflen, res))
+			return -1;
+		return res;
+	}
+#endif /* CONFIG_P2P */
+
 	wpa_printf(MSG_DEBUG, "CTRL_IFACE: Unknown GET_CAPABILITY field '%s'",
 		   field);
 
@@ -5339,7 +5371,7 @@ static int print_bss_info(struct wpa_supplicant *wpa_s, struct wpa_bss *bss,
 	size_t i;
 	int ret;
 	char *pos, *end;
-	const u8 *ie, *ie2, *osen_ie, *mesh, *owe, *rsnxe;
+	const u8 *ie, *ie2, *mesh, *owe, *rsnxe;
 
 	pos = buf;
 	end = buf + buflen;
@@ -5454,12 +5486,12 @@ static int print_bss_info(struct wpa_supplicant *wpa_s, struct wpa_bss *bss,
 		if (ie)
 			pos = wpa_supplicant_ie_txt(pos, end, "WPA", ie,
 						    2 + ie[1]);
-		ie2 = wpa_bss_get_ie(bss, WLAN_EID_RSN);
+		ie2 = wpa_bss_get_rsne(wpa_s, bss, NULL, false);
 		if (ie2)
 			pos = wpa_supplicant_ie_txt(pos, end,
 						    mesh ? "RSN" : "WPA2", ie2,
 						    2 + ie2[1]);
-		rsnxe = wpa_bss_get_ie(bss, WLAN_EID_RSNX);
+		rsnxe = wpa_bss_get_rsnxe(wpa_s, bss, NULL, false);
 		if (ieee802_11_rsnx_capab(rsnxe, WLAN_RSNX_CAPAB_SAE_H2E)) {
 			ret = os_snprintf(pos, end - pos, "[SAE-H2E]");
 			if (os_snprintf_error(end - pos, ret))
@@ -5472,10 +5504,6 @@ static int print_bss_info(struct wpa_supplicant *wpa_s, struct wpa_bss *bss,
 				return 0;
 			pos += ret;
 		}
-		osen_ie = wpa_bss_get_vendor_ie(bss, OSEN_IE_VENDOR_TYPE);
-		if (osen_ie)
-			pos = wpa_supplicant_ie_txt(pos, end, "OSEN",
-						    osen_ie, 2 + osen_ie[1]);
 		owe = wpa_bss_get_vendor_ie(bss, OWE_IE_VENDOR_TYPE);
 		if (owe) {
 			ret = os_snprintf(
@@ -5486,7 +5514,7 @@ static int print_bss_info(struct wpa_supplicant *wpa_s, struct wpa_bss *bss,
 			pos += ret;
 		}
 		pos = wpa_supplicant_wps_ie_txt(wpa_s, pos, end, bss);
-		if (!ie && !ie2 && !osen_ie &&
+		if (!ie && !ie2 &&
 		    (bss->caps & IEEE80211_CAP_PRIVACY)) {
 			ret = os_snprintf(pos, end - pos, "[WEP]");
 			if (os_snprintf_error(end - pos, ret))
@@ -5674,12 +5702,6 @@ static int print_bss_info(struct wpa_supplicant *wpa_s, struct wpa_bss *bss,
 				   anqp->hs20_connection_capability);
 		pos = anqp_add_hex(pos, end, "hs20_operating_class",
 				   anqp->hs20_operating_class);
-		pos = anqp_add_hex(pos, end, "hs20_osu_providers_list",
-				   anqp->hs20_osu_providers_list);
-		pos = anqp_add_hex(pos, end, "hs20_operator_icon_metadata",
-				   anqp->hs20_operator_icon_metadata);
-		pos = anqp_add_hex(pos, end, "hs20_osu_providers_nai_list",
-				   anqp->hs20_osu_providers_nai_list);
 #endif /* CONFIG_HS20 */
 
 		dl_list_for_each(elem, &anqp->anqp_elems,
@@ -6045,7 +6067,7 @@ static int wpa_supplicant_ctrl_iface_roam(struct wpa_supplicant *wpa_s,
 		return -1;
 	}
 
-	bss = wpa_bss_get(wpa_s, bssid, ssid->ssid, ssid->ssid_len);
+	bss = wpa_bss_get_connection(wpa_s, bssid, ssid->ssid, ssid->ssid_len);
 	if (!bss) {
 		wpa_printf(MSG_DEBUG, "CTRL_IFACE ROAM: Target AP not found "
 			   "from BSS table");
@@ -6330,7 +6352,7 @@ static int p2p_ctrl_asp_provision_resp(struct wpa_supplicant *wpa_s, char *cmd)
 		return -1;
 	}
 
-	return wpas_p2p_prov_disc(wpa_s, addr, NULL, WPAS_P2P_PD_FOR_ASP,
+	return wpas_p2p_prov_disc(wpa_s, addr, NULL, 0, WPAS_P2P_PD_FOR_ASP,
 				  p2ps_prov);
 }
 
@@ -6359,8 +6381,31 @@ static int p2p_ctrl_asp_provision(struct wpa_supplicant *wpa_s, char *cmd)
 
 	p2ps_prov->pd_seeker = 1;
 
-	return wpas_p2p_prov_disc(wpa_s, addr, NULL, WPAS_P2P_PD_FOR_ASP,
+	return wpas_p2p_prov_disc(wpa_s, addr, NULL, 0, WPAS_P2P_PD_FOR_ASP,
 				  p2ps_prov);
+}
+
+
+static bool bootstrap_pwd_required(u16 bootstrap)
+{
+	switch (bootstrap) {
+	case P2P_PBMA_OPPORTUNISTIC:
+		return false;
+	case P2P_PBMA_PIN_CODE_DISPLAY:
+	case P2P_PBMA_PASSPHRASE_DISPLAY:
+	case P2P_PBMA_QR_DISPLAY:
+	case P2P_PBMA_NFC_TAG:
+	case P2P_PBMA_PIN_CODE_KEYPAD:
+	case P2P_PBMA_PASSPHRASE_KEYPAD:
+	case P2P_PBMA_QR_SCAN:
+	case P2P_PBMA_NFC_READER:
+		return true;
+	case P2P_PBMA_SERVICE_MANAGED:
+	case P2P_PBMA_HANDSHAKE_SKIP:
+		return false;
+	}
+
+	return false;
 }
 
 
@@ -6386,6 +6431,10 @@ static int p2p_ctrl_connect(struct wpa_supplicant *wpa_s, char *cmd,
 	size_t group_ssid_len = 0;
 	int he;
 	bool allow_6ghz;
+	bool p2p2, skip_prov;
+	u16 bootstrap = 0;
+	const char *password = NULL;
+	char *token, *context = NULL;
 
 	if (!wpa_s->global->p2p_init_wpa_s)
 		return -1;
@@ -6395,10 +6444,12 @@ static int p2p_ctrl_connect(struct wpa_supplicant *wpa_s, char *cmd,
 		wpa_s = wpa_s->global->p2p_init_wpa_s;
 	}
 
-	/* <addr> <"pbc" | "pin" | PIN> [label|display|keypad|p2ps]
+	/* <addr> <"pbc" | "pin" | "pair" | PIN> [label|display|keypad|p2ps]
 	 * [persistent|persistent=<network id>]
 	 * [join] [auth] [go_intent=<0..15>] [freq=<in MHz>] [provdisc]
-	 * [ht40] [vht] [he] [edmg] [auto] [ssid=<hexdump>] */
+	 * [ht40] [vht] [he] [edmg] [auto] [ssid=<hexdump>]
+	 * [p2p2] [skip_prov] [bstrapmethod=<value>] [password=<string>]
+	 */
 
 	if (hwaddr_aton(cmd, addr))
 		return -1;
@@ -6432,6 +6483,8 @@ static int p2p_ctrl_connect(struct wpa_supplicant *wpa_s, char *cmd,
 		vht;
 	he = (os_strstr(cmd, " he") != NULL) || wpa_s->conf->p2p_go_he;
 	edmg = (os_strstr(cmd, " edmg") != NULL) || wpa_s->conf->p2p_go_edmg;
+	p2p2 = os_strstr(pos, " p2p2") != NULL;
+	skip_prov = os_strstr(pos, " skip_prov") != NULL;
 
 	pos2 = os_strstr(pos, " go_intent=");
 	if (pos2) {
@@ -6487,6 +6540,8 @@ static int p2p_ctrl_connect(struct wpa_supplicant *wpa_s, char *cmd,
 		wps_method = WPS_PBC;
 	} else if (os_strstr(pos, "p2ps") != NULL) {
 		wps_method = WPS_P2PS;
+	} else if (os_strncmp(pos, "pair", 4) == 0 && p2p2) {
+		wps_method = WPS_NOT_READY;
 	} else {
 		pin = pos;
 		pos = os_strchr(pin, ' ');
@@ -6502,11 +6557,31 @@ static int p2p_ctrl_connect(struct wpa_supplicant *wpa_s, char *cmd,
 		}
 	}
 
+	pos2 = os_strstr(pos, "bstrapmethod=");
+	if (pos2) {
+		pos2 += 13;
+		bootstrap = atoi(pos2);
+	}
+
+	while ((token = str_token(pos, " ", &context))) {
+		if (os_strncmp(token, "password=", 9) == 0) {
+			password = token + 9;
+			continue;
+		}
+	}
+
+	if (bootstrap_pwd_required(bootstrap) && !password) {
+		wpa_printf(MSG_DEBUG,
+			   "CTRL_IFACE: This P2P2 bootstrap method requires password");
+		return -1;
+	}
+
 	new_pin = wpas_p2p_connect(wpa_s, addr, pin, wps_method,
 				   persistent_group, automatic, join,
 				   auth, go_intent, freq, freq2, persistent_id,
 				   pd, ht40, vht, max_oper_chwidth, he, edmg,
-				   group_ssid, group_ssid_len, allow_6ghz);
+				   group_ssid, group_ssid_len, allow_6ghz, p2p2,
+				   bootstrap, password, skip_prov);
 	if (new_pin == -2) {
 		os_memcpy(buf, "FAIL-CHANNEL-UNAVAILABLE\n", 25);
 		return 25;
@@ -6544,10 +6619,11 @@ static int p2p_ctrl_listen(struct wpa_supplicant *wpa_s, char *cmd)
 static int p2p_ctrl_prov_disc(struct wpa_supplicant *wpa_s, char *cmd)
 {
 	u8 addr[ETH_ALEN];
-	char *pos;
+	char *pos, *pos2;
 	enum wpas_p2p_prov_disc_use use = WPAS_P2P_PD_FOR_GO_NEG;
+	u16 bootstrap = 0;
 
-	/* <addr> <config method> [join|auto] */
+	/* <addr> <config method> [join|auto] [bstrapmethod=<value>] */
 
 	if (hwaddr_aton(cmd, addr))
 		return -1;
@@ -6562,7 +6638,13 @@ static int p2p_ctrl_prov_disc(struct wpa_supplicant *wpa_s, char *cmd)
 	else if (os_strstr(pos, " auto") != NULL)
 		use = WPAS_P2P_PD_AUTO;
 
-	return wpas_p2p_prov_disc(wpa_s, addr, pos, use, NULL);
+	pos2 = os_strstr(pos, "bstrapmethod=");
+	if (pos2) {
+		pos2 += 13;
+		bootstrap = atoi(pos2);
+	}
+
+	return wpas_p2p_prov_disc(wpa_s, addr, pos, bootstrap, use, NULL);
 }
 
 
@@ -6577,6 +6659,52 @@ static int p2p_get_passphrase(struct wpa_supplicant *wpa_s, char *buf,
 
 	os_strlcpy(buf, ssid->passphrase, buflen);
 	return os_strlen(buf);
+}
+
+
+static int p2p_ctrl_validate_dira(struct wpa_supplicant *wpa_s, char *cmd,
+				  char *buf, size_t buflen)
+{
+	char *pos, *pos2;
+	u8 addr[ETH_ALEN];
+	u8 nonce[DEVICE_IDENTITY_NONCE_LEN];
+	u8 tag[DEVICE_IDENTITY_TAG_LEN];
+	int id;
+	int res;
+
+	if (hwaddr_aton(cmd, addr))
+		return -1;
+
+	pos = cmd + 17;
+	if (*pos != ' ')
+		return -1;
+
+	pos2 = os_strstr(pos, "nonce=");
+	if (pos2) {
+		pos2 += 6;
+		if (hexstr2bin(pos2, nonce, sizeof(nonce)) < 0)
+			return -1;
+	} else {
+		return -1;
+	}
+
+	pos2 = os_strstr(pos, "tag=");
+	if (pos2) {
+		pos2 += 4;
+		if (hexstr2bin(pos2, tag, sizeof(tag)) < 0)
+			return -1;
+	} else {
+		return -1;
+	}
+
+	id = wpas_p2p_validate_dira(wpa_s, addr, 0, nonce, tag);
+	if (id <= 0)
+		return -1;
+
+	res = os_snprintf(buf, buflen, "%u", id);
+	if (os_snprintf_error(buflen, res))
+		return -1;
+	return res;
 }
 
 
@@ -7053,14 +7181,16 @@ static int p2p_ctrl_invite_persistent(struct wpa_supplicant *wpa_s, char *cmd)
 {
 	char *pos;
 	int id;
-	struct wpa_ssid *ssid;
+	struct wpa_ssid *ssid = NULL;
 	u8 *_peer = NULL, peer[ETH_ALEN];
 	int freq = 0, pref_freq = 0;
 	int ht40, vht, he, max_oper_chwidth, chwidth = 0, freq2 = 0;
 	int edmg;
 	bool allow_6ghz;
+	bool p2p2;
 
-	id = atoi(cmd);
+	p2p2 = os_strstr(cmd, " p2p2") != NULL;
+
 	pos = os_strstr(cmd, " peer=");
 	if (pos) {
 		pos += 6;
@@ -7068,11 +7198,19 @@ static int p2p_ctrl_invite_persistent(struct wpa_supplicant *wpa_s, char *cmd)
 			return -1;
 		_peer = peer;
 	}
-	ssid = wpa_config_get_network(wpa_s->conf, id);
-	if (ssid == NULL || ssid->disabled != 2) {
-		wpa_printf(MSG_DEBUG, "CTRL_IFACE: Could not find SSID id=%d "
-			   "for persistent P2P group",
-			   id);
+
+	if (os_strncmp(cmd, "persistent=", 11) == 0) {
+		id = atoi(cmd + 11);
+		ssid = wpa_config_get_network(wpa_s->conf, id);
+		if (!ssid || ssid->disabled != 2) {
+			wpa_printf(MSG_DEBUG,
+				   "CTRL_IFACE: Could not find SSID id=%d for persistent P2P group",
+				   id);
+			return -1;
+		}
+	} else if (p2p2 && !_peer) {
+		wpa_printf(MSG_DEBUG,
+			   "CTRL_IFACE: Could not find peer for persistent P2P group");
 		return -1;
 	}
 
@@ -7117,7 +7255,7 @@ static int p2p_ctrl_invite_persistent(struct wpa_supplicant *wpa_s, char *cmd)
 
 	return wpas_p2p_invite(wpa_s, _peer, ssid, NULL, freq, freq2, ht40, vht,
 			       max_oper_chwidth, pref_freq, he, edmg,
-			       allow_6ghz);
+			       allow_6ghz, p2p2);
 }
 
 
@@ -7157,8 +7295,8 @@ static int p2p_ctrl_invite_group(struct wpa_supplicant *wpa_s, char *cmd)
 
 static int p2p_ctrl_invite(struct wpa_supplicant *wpa_s, char *cmd)
 {
-	if (os_strncmp(cmd, "persistent=", 11) == 0)
-		return p2p_ctrl_invite_persistent(wpa_s, cmd + 11);
+	if (os_strncmp(cmd, "persistent", 10) == 0)
+		return p2p_ctrl_invite_persistent(wpa_s, cmd);
 	if (os_strncmp(cmd, "group=", 6) == 0)
 		return p2p_ctrl_invite_group(wpa_s, cmd + 6);
 
@@ -7182,17 +7320,19 @@ static int p2p_ctrl_group_add_persistent(struct wpa_supplicant *wpa_s,
 		return -1;
 	}
 
-	return wpas_p2p_group_add_persistent(wpa_s, ssid, 0, freq, 0,
+	return wpas_p2p_group_add_persistent(wpa_s, ssid, 0, freq, freq,
 					     vht_center_freq2, ht40, vht,
 					     vht_chwidth, he, edmg,
 					     NULL, 0, 0, allow_6ghz, 0,
-					     go_bssid);
+					     go_bssid, NULL, NULL, NULL, 0);
 }
 
 
 static int p2p_ctrl_group_add(struct wpa_supplicant *wpa_s, char *cmd)
 {
 	int freq = 0, persistent = 0, group_id = -1;
+	bool p2p2 = false;
+	int p2pmode = WPA_P2P_MODE_WFD_R1;
 	bool allow_6ghz = false;
 	int vht = wpa_s->conf->p2p_go_vht;
 	int ht40 = wpa_s->conf->p2p_go_ht40 || vht;
@@ -7208,7 +7348,8 @@ static int p2p_ctrl_group_add(struct wpa_supplicant *wpa_s, char *cmd)
 	while ((token = str_token(cmd, " ", &context))) {
 		if (sscanf(token, "freq2=%d", &freq2) == 1 ||
 		    sscanf(token, "persistent=%d", &group_id) == 1 ||
-		    sscanf(token, "max_oper_chwidth=%d", &chwidth) == 1) {
+		    sscanf(token, "max_oper_chwidth=%d", &chwidth) == 1 ||
+		    sscanf(token, "p2pmode=%d", &p2pmode) == 1) {
 			continue;
 #ifdef CONFIG_ACS
 		} else if (os_strcmp(token, "freq=acs") == 0) {
@@ -7229,6 +7370,8 @@ static int p2p_ctrl_group_add(struct wpa_supplicant *wpa_s, char *cmd)
 			persistent = 1;
 		} else if (os_strcmp(token, "allow_6ghz") == 0) {
 			allow_6ghz = true;
+		} else if (os_strcmp(token, "p2p2") == 0) {
+			p2p2 = true;
 		} else if (os_strncmp(token, "go_bssid=", 9) == 0) {
 			if (hwaddr_aton(token + 9, go_bssid_buf))
 				return -1;
@@ -7279,8 +7422,12 @@ static int p2p_ctrl_group_add(struct wpa_supplicant *wpa_s, char *cmd)
 						     edmg, allow_6ghz,
 						     go_bssid);
 
+	if (p2pmode < WPA_P2P_MODE_WFD_R1 || p2pmode > WPA_P2P_MODE_WFD_PCC)
+		return -1;
+
 	return wpas_p2p_group_add(wpa_s, persistent, freq, freq2, ht40, vht,
-				  max_oper_chwidth, he, edmg, allow_6ghz);
+				  max_oper_chwidth, he, edmg, allow_6ghz, p2p2,
+				  (enum wpa_p2p_mode) p2pmode);
 }
 
 
@@ -7705,6 +7852,52 @@ static int p2p_ctrl_set(struct wpa_supplicant *wpa_s, char *cmd)
 		return 0;
 	}
 #endif
+#ifdef CONFIG_TESTING_OPTIONS
+	if (os_strcmp(cmd, "pairing_setup") == 0) {
+		p2p_set_pairing_setup(wpa_s->global->p2p, atoi(param));
+		return 0;
+	}
+
+	if (os_strcmp(cmd, "pairing_cache") == 0) {
+		p2p_set_pairing_cache(wpa_s->global->p2p, atoi(param));
+		return 0;
+	}
+
+	if (os_strcmp(cmd, "supported_bootstrapmethods") == 0) {
+		p2p_set_bootstrapmethods(wpa_s->global->p2p, atoi(param));
+		return 0;
+	}
+
+	if (os_strcmp(cmd, "pasn_type") == 0) {
+		p2p_set_pasn_type(wpa_s->global->p2p, atoi(param));
+		return 0;
+	}
+
+	if (os_strcmp(cmd, "comeback_after") == 0) {
+		p2p_set_comeback_after(wpa_s->global->p2p, atoi(param));
+		return 0;
+	}
+
+	if (os_strcmp(cmd, "reginfo") == 0) {
+		p2p_set_reg_info(wpa_s->global->p2p, atoi(param));
+		return 0;
+	}
+
+	if (os_strcmp(cmd, "twt_power_mgmt") == 0) {
+		p2p_set_twt_power_mgmt(wpa_s->global->p2p, atoi(param));
+		return 0;
+	}
+
+	if (os_strcmp(cmd, "chan_switch_req_enable") == 0) {
+		p2p_set_chan_switch_req_enable(wpa_s->global->p2p, atoi(param));
+		return 0;
+	}
+
+	if (os_strcmp(cmd, "inv_oper_freq") == 0) {
+		p2p_set_invitation_op_freq(wpa_s->global->p2p, atoi(param));
+		return 0;
+	}
+#endif /* CONFIG_TESTING_OPTIONS */
 
 	wpa_printf(MSG_DEBUG, "CTRL_IFACE: Unknown P2P_SET field value '%s'",
 		   cmd);
@@ -7721,12 +7914,15 @@ static void p2p_ctrl_flush(struct wpa_supplicant *wpa_s)
 #ifdef CONFIG_TESTING_OPTIONS
 	os_free(wpa_s->get_pref_freq_list_override);
 	wpa_s->get_pref_freq_list_override = NULL;
+	p2p_set_invitation_op_freq(wpa_s->global->p2p, -1);
 #endif /* CONFIG_TESTING_OPTIONS */
 
 	wpas_p2p_stop_find(wpa_s);
 	wpa_s->parent->p2ps_method_config_any = 0;
 	if (wpa_s->global->p2p)
 		p2p_flush(wpa_s->global->p2p);
+
+	wpa_s->p2p2 = false;
 }
 
 
@@ -7835,6 +8031,25 @@ static int p2p_ctrl_iface_p2p_send_dev_disc(struct wpa_supplicant *wpa_s, char *
 
 }
 #endif
+#ifdef CONFIG_TESTING_OPTIONS
+static int p2p_ctrl_pmk_get(struct wpa_supplicant *wpa_s, char *buf,
+			    size_t buflen)
+{
+	const u8 *pmk;
+	size_t pmk_len;
+
+	/* Return the PMK from the first identity entry. This assumes test
+	 * cases to remove all indentities at the beginning so that only one
+	 * entry is available. */
+	if (!wpa_s->conf->identity || !wpa_s->conf->identity->pmk)
+		return -1;
+
+	pmk_len = wpabuf_len(wpa_s->conf->identity->pmk);
+	pmk = wpabuf_head(wpa_s->conf->identity->pmk);
+
+	return wpa_snprintf_hex(buf, buflen, pmk, pmk_len);
+}
+#endif /* CONFIG_TESTING_OPTIONS */
 #endif /* CONFIG_P2P */
 
 
@@ -8175,7 +8390,7 @@ static int get_hs20_anqp(struct wpa_supplicant *wpa_s, char *dst)
 	if (subtypes == 0)
 		return -1;
 
-	return hs20_anqp_send_req(wpa_s, dst_addr, subtypes, NULL, 0, 0);
+	return hs20_anqp_send_req(wpa_s, dst_addr, subtypes, NULL, 0);
 }
 
 
@@ -8198,7 +8413,7 @@ static int hs20_nai_home_realm_list(struct wpa_supplicant *wpa_s,
 
 	ret = hs20_anqp_send_req(wpa_s, addr,
 				 BIT(HS20_STYPE_NAI_HOME_REALM_QUERY),
-				 buf, len, 0);
+				 buf, len);
 
 	os_free(buf);
 
@@ -8244,75 +8459,10 @@ static int hs20_get_nai_home_realm_list(struct wpa_supplicant *wpa_s,
 
 	ret = hs20_anqp_send_req(wpa_s, dst_addr,
 				 BIT(HS20_STYPE_NAI_HOME_REALM_QUERY),
-				 buf, len, 0);
+				 buf, len);
 	os_free(buf);
 
 	return ret;
-}
-
-
-static int get_hs20_icon(struct wpa_supplicant *wpa_s, char *cmd, char *reply,
-			 int buflen)
-{
-	u8 dst_addr[ETH_ALEN];
-	int used;
-	char *ctx = NULL, *icon, *poffset, *psize;
-
-	used = hwaddr_aton2(cmd, dst_addr);
-	if (used < 0)
-		return -1;
-	cmd += used;
-
-	icon = str_token(cmd, " ", &ctx);
-	poffset = str_token(cmd, " ", &ctx);
-	psize = str_token(cmd, " ", &ctx);
-	if (!icon || !poffset || !psize)
-		return -1;
-
-	wpa_s->fetch_osu_icon_in_progress = 0;
-	return hs20_get_icon(wpa_s, dst_addr, icon, atoi(poffset), atoi(psize),
-			     reply, buflen);
-}
-
-
-static int del_hs20_icon(struct wpa_supplicant *wpa_s, char *cmd)
-{
-	u8 dst_addr[ETH_ALEN];
-	int used;
-	char *icon;
-
-	if (!cmd[0])
-		return hs20_del_icon(wpa_s, NULL, NULL);
-
-	used = hwaddr_aton2(cmd, dst_addr);
-	if (used < 0)
-		return -1;
-
-	while (cmd[used] == ' ')
-		used++;
-	icon = cmd[used] ? &cmd[used] : NULL;
-
-	return hs20_del_icon(wpa_s, dst_addr, icon);
-}
-
-
-static int hs20_icon_request(struct wpa_supplicant *wpa_s, char *cmd, int inmem)
-{
-	u8 dst_addr[ETH_ALEN];
-	int used;
-	char *icon;
-
-	used = hwaddr_aton2(cmd, dst_addr);
-	if (used < 0)
-		return -1;
-
-	while (cmd[used] == ' ')
-		used++;
-	icon = &cmd[used];
-
-	wpa_s->fetch_osu_icon_in_progress = 0;
-	return hs20_anqp_send_req(wpa_s, dst_addr, BIT(HS20_STYPE_ICON_REQUEST),
-				  (u8 *) icon, os_strlen(icon), inmem);
 }
 
 #endif /* CONFIG_HS20 */
@@ -8706,6 +8856,7 @@ static int wpa_supplicant_driver_cmd(struct wpa_supplicant *wpa_s, char *cmd,
 
 	ret = wpa_drv_driver_cmd(wpa_s, cmd, buf, buflen);
 	if (ret == 0) {
+#ifdef CONFIG_P2P
 		if (os_strncasecmp(cmd, "COUNTRY", 7) == 0) {
 			struct p2p_data *p2p = wpa_s->global->p2p;
 			if (p2p) {
@@ -8716,6 +8867,7 @@ static int wpa_supplicant_driver_cmd(struct wpa_supplicant *wpa_s, char *cmd,
 				p2p_set_country(p2p, country);
 			}
 		}
+#endif /* CONFIG_P2P */
 		ret = os_snprintf(buf, buflen, "%s\n", "OK");
 		if (os_snprintf_error(buflen, ret))
 			ret = -1;
@@ -8937,13 +9089,6 @@ static void wpa_supplicant_ctrl_iface_flush(struct wpa_supplicant *wpa_s)
 
 	wnm_btm_reset(wpa_s);
 
-#ifdef CONFIG_INTERWORKING
-#ifdef CONFIG_HS20
-	hs20_cancel_fetch_osu(wpa_s);
-	hs20_del_icon(wpa_s, NULL, NULL);
-#endif /* CONFIG_HS20 */
-#endif /* CONFIG_INTERWORKING */
-
 	wpa_s->ext_mgmt_frame_handling = 0;
 	wpa_s->ext_eapol_frame_io = 0;
 #ifdef CONFIG_TESTING_OPTIONS
@@ -8960,6 +9105,7 @@ static void wpa_supplicant_ctrl_iface_flush(struct wpa_supplicant *wpa_s)
 	wpa_sm_set_test_assoc_ie(wpa_s->wpa, NULL);
 	wpa_sm_set_test_eapol_m2_elems(wpa_s->wpa, NULL);
 	wpa_sm_set_test_eapol_m4_elems(wpa_s->wpa, NULL);
+	wpa_sm_set_test_rsnxe_data(wpa_s->wpa, NULL, NULL);
 	wpa_sm_set_param(wpa_s->wpa, WPA_PARAM_ENCRYPT_EAPOL_M2, 0);
 	wpa_sm_set_param(wpa_s->wpa, WPA_PARAM_ENCRYPT_EAPOL_M4, 0);
 	os_free(wpa_s->get_pref_freq_list_override);
@@ -8975,6 +9121,14 @@ static void wpa_supplicant_ctrl_iface_flush(struct wpa_supplicant *wpa_s)
 	wpabuf_free(wpa_s->rsnxe_override_eapol);
 	wpa_s->rsnxe_override_eapol = NULL;
 	wpas_clear_driver_signal_override(wpa_s);
+	{
+		int i;
+
+		for (i = 0; i < MAX_NUM_MLD_LINKS; i++) {
+			wpabuf_free(wpa_s->link_ies[i]);
+			wpa_s->link_ies[i] = NULL;
+		}
+	}
 #ifndef CONFIG_NO_ROBUST_AV
 	wpa_s->disable_scs_support = 0;
 	wpa_s->disable_mscs_support = 0;
@@ -8988,6 +9142,7 @@ static void wpa_supplicant_ctrl_iface_flush(struct wpa_supplicant *wpa_s)
 	wpa_s->oci_freq_override_fils_assoc = 0;
 	wpa_s->oci_freq_override_wnm_sleep = 0;
 	wpa_s->disable_eapol_g2_tx = 0;
+	wpa_s->eapol_2_key_info_set_mask = 0;
 	wpa_s->test_assoc_comeback_type = -1;
 #ifdef CONFIG_DPP
 	os_free(wpa_s->dpp_config_obj_override);
@@ -9001,6 +9156,9 @@ static void wpa_supplicant_ctrl_iface_flush(struct wpa_supplicant *wpa_s)
 	dpp_test = DPP_TEST_DISABLED;
 #endif /* CONFIG_DPP */
 #endif /* CONFIG_TESTING_OPTIONS */
+#ifdef CONFIG_WFA
+	wpa_s->random_pmkid = 0;
+#endif
 
 	wpa_s->disconnected = 0;
 	os_free(wpa_s->next_scan_freqs);
@@ -10331,6 +10489,29 @@ static int wpas_ctrl_test_eapol_m4_elems(struct wpa_supplicant *wpa_s,
 }
 
 
+static int wpas_ctrl_test_rsnxe_data(struct wpa_supplicant *wpa_s,
+				     const char *cmd)
+{
+	struct wpabuf *data = NULL, *mask = NULL;
+	char *pos;
+
+	pos = os_strchr(cmd, ' ');
+	if (!pos)
+		return -1;
+	*pos++ = '\0';
+
+	if (wpas_get_hex_buf(cmd, &data) < 0 ||
+	    wpas_get_hex_buf(pos, &mask) < 0 ||
+	    wpa_sm_set_test_rsnxe_data(wpa_s->wpa, data, mask) < 0) {
+		wpabuf_free(data);
+		wpabuf_free(mask);
+		return -1;
+	}
+
+	return 0;
+}
+
+
 static int wpas_ctrl_reset_pn(struct wpa_supplicant *wpa_s)
 {
 	u8 zero[WPA_TK_MAX_LEN];
@@ -10394,6 +10575,7 @@ static int wpas_ctrl_resend_assoc(struct wpa_supplicant *wpa_s)
 	params.key_mgmt_suite = wpa_s->key_mgmt;
 	params.wpa_proto = wpa_s->wpa_proto;
 	params.mgmt_frame_protection = wpa_s->sme.mfp;
+	params.spp_amsdu = wpa_s->sme.spp_amsdu;
 	params.rrm_used = wpa_s->rrm.rrm_used;
 	if (wpa_s->sme.prev_bssid_set)
 		params.prev_bssid = wpa_s->sme.prev_bssid;
@@ -10885,6 +11067,24 @@ static void wpas_ctrl_iface_pmksa_flush(struct wpa_supplicant *wpa_s)
 #endif /* CONFIG_AP */
 }
 
+#ifdef CONFIG_P2P
+#ifdef CONFIG_PASN
+
+#ifdef CONFIG_TESTING_OPTIONS
+static int p2p_ctrl_get_pasn_ptk(struct wpa_supplicant *wpa_s, char *buf,
+				 size_t buflen)
+{
+	const u8 *ptk;
+	size_t ptk_len;
+
+	if (wpas_p2p_get_pasn_ptk(wpa_s, &ptk, &ptk_len))
+		return -1;
+	return wpa_snprintf_hex(buf, buflen, ptk, ptk_len);
+}
+#endif /* CONFIG_TESTING_OPTIONS */
+
+#endif /* CONFIG_PASN */
+#endif /* CONFIG_P2P */
 
 #ifdef CONFIG_PMKSA_CACHE_EXTERNAL
 
@@ -12257,6 +12457,7 @@ static int wpas_ctrl_nan_publish(struct wpa_supplicant *wpa_s, char *cmd,
 	int ret = -1;
 	enum nan_service_protocol_type srv_proto_type = 0;
 	int *freq_list = NULL;
+	bool p2p = false;
 
 	os_memset(&params, 0, sizeof(params));
 	/* USD shall use both solicited and unsolicited transmissions */
@@ -12317,6 +12518,11 @@ static int wpas_ctrl_nan_publish(struct wpa_supplicant *wpa_s, char *cmd,
 			continue;
 		}
 
+		if (os_strcmp(token, "p2p=1") == 0) {
+			p2p = true;
+			continue;
+		}
+
 		if (os_strcmp(token, "solicited=0") == 0) {
 			params.solicited = false;
 			continue;
@@ -12338,7 +12544,7 @@ static int wpas_ctrl_nan_publish(struct wpa_supplicant *wpa_s, char *cmd,
 	}
 
 	publish_id = wpas_nan_usd_publish(wpa_s, service_name, srv_proto_type,
-					  ssi, &params);
+					  ssi, &params, p2p);
 	if (publish_id > 0)
 		ret = os_snprintf(buf, buflen, "%d", publish_id);
 fail:
@@ -12422,6 +12628,8 @@ static int wpas_ctrl_nan_subscribe(struct wpa_supplicant *wpa_s, char *cmd,
 	struct wpabuf *ssi = NULL;
 	int ret = -1;
 	enum nan_service_protocol_type srv_proto_type = 0;
+	int *freq_list = NULL;
+	bool p2p = false;
 
 	os_memset(&params, 0, sizeof(params));
 	params.freq = NAN_USD_DEFAULT_FREQ;
@@ -12447,6 +12655,27 @@ static int wpas_ctrl_nan_subscribe(struct wpa_supplicant *wpa_s, char *cmd,
 			continue;
 		}
 
+		if (os_strncmp(token, "freq_list=", 10) == 0) {
+			char *pos = token + 10;
+
+			if (os_strcmp(pos, "all") == 0) {
+				os_free(freq_list);
+				freq_list = wpas_nan_usd_all_freqs(wpa_s);
+				params.freq_list = freq_list;
+				continue;
+			}
+
+			while (pos && pos[0]) {
+				int_array_add_unique(&freq_list, atoi(pos));
+				pos = os_strchr(pos, ',');
+				if (pos)
+					pos++;
+			}
+
+			params.freq_list = freq_list;
+			continue;
+		}
+
 		if (os_strncmp(token, "srv_proto_type=", 15) == 0) {
 			srv_proto_type = atoi(token + 15);
 			continue;
@@ -12461,6 +12690,11 @@ static int wpas_ctrl_nan_subscribe(struct wpa_supplicant *wpa_s, char *cmd,
 			continue;
 		}
 
+		if (os_strcmp(token, "p2p=1") == 0) {
+			p2p = true;
+			continue;
+		}
+
 		wpa_printf(MSG_INFO,
 			   "CTRL: Invalid NAN_SUBSCRIBE parameter: %s",
 			   token);
@@ -12469,11 +12703,12 @@ static int wpas_ctrl_nan_subscribe(struct wpa_supplicant *wpa_s, char *cmd,
 
 	subscribe_id = wpas_nan_usd_subscribe(wpa_s, service_name,
 					      srv_proto_type, ssi,
-					      &params);
+					      &params, p2p);
 	if (subscribe_id > 0)
 		ret = os_snprintf(buf, buflen, "%d", subscribe_id);
 fail:
 	wpabuf_free(ssi);
+	os_free(freq_list);
 	return ret;
 }
 
@@ -12560,6 +12795,53 @@ static int wpas_ctrl_nan_transmit(struct wpa_supplicant *wpa_s, char *cmd)
 fail:
 	wpabuf_free(ssi);
 	return ret;
+}
+
+
+static int wpas_ctrl_nan_unpause_publish(struct wpa_supplicant *wpa_s,
+					 char *cmd)
+{
+	char *token, *context = NULL;
+	int publish_id = 0;
+	int peer_instance_id = 0;
+	u8 peer_addr[ETH_ALEN];
+
+	os_memset(peer_addr, 0, ETH_ALEN);
+
+	while ((token = str_token(cmd, " ", &context))) {
+		if (sscanf(token, "publish_id=%i", &publish_id) == 1)
+			continue;
+
+		if (sscanf(token, "peer_instance_id=%i",
+			   &peer_instance_id) == 1)
+			continue;
+
+		if (os_strncmp(token, "peer=", 5) == 0) {
+			if (hwaddr_aton(token + 5, peer_addr) < 0)
+				return -1;
+			continue;
+		}
+
+		wpa_printf(MSG_INFO,
+			   "CTRL: Invalid NAN_UNPAUSE_PUBLISH parameter: %s",
+			   token);
+		return -1;
+	}
+
+	if (publish_id <= 0) {
+		wpa_printf(MSG_INFO,
+			   "CTRL: Invalid or missing NAN_UNPAUSE_PUBLIH publish_id");
+		return -1;
+	}
+
+	if (is_zero_ether_addr(peer_addr)) {
+		wpa_printf(MSG_INFO,
+			   "CTRL: Invalid or missing NAN_UNPAUSE_PUBLISH address");
+		return -1;
+	}
+
+	return wpas_nan_usd_unpause_publish(wpa_s, publish_id, peer_instance_id,
+					    peer_addr);
 }
 
 #endif /* CONFIG_NAN_USD */
@@ -12864,6 +13146,17 @@ char * wpa_supplicant_ctrl_iface_process(struct wpa_supplicant *wpa_s,
 			reply_len = -1;
 	} else if (os_strcmp(buf, "P2P_GET_PASSPHRASE") == 0) {
 		reply_len = p2p_get_passphrase(wpa_s, reply, reply_size);
+	} else if (os_strcmp(buf, "P2P_GET_DIRA") == 0) {
+		reply_len = wpas_p2p_get_dira(wpa_s, reply, reply_size);
+	} else if (os_strncmp(buf, "P2P_VALIDATE_DIRA ", 18) == 0) {
+		reply_len = p2p_ctrl_validate_dira(wpa_s, buf + 18,
+						   reply, reply_size);
+#ifdef CONFIG_PASN
+#ifdef CONFIG_TESTING_OPTIONS
+	} else if (os_strcmp(buf, "P2P_GET_PASNPTK") == 0) {
+		reply_len = p2p_ctrl_get_pasn_ptk(wpa_s, reply, reply_size);
+#endif /* CONFIG_TESTING_OPTIONS */
+#endif /* CONFIG_PASN */
 	} else if (os_strncmp(buf, "P2P_SERV_DISC_REQ ", 18) == 0) {
 		reply_len = p2p_ctrl_serv_disc_req(wpa_s, buf + 18, reply,
 						   reply_size);
@@ -12935,6 +13228,13 @@ char * wpa_supplicant_ctrl_iface_process(struct wpa_supplicant *wpa_s,
 		if (p2p_ctrl_iface_p2p_send_dev_disc(wpa_s, buf + 18))
 			reply_len = -1;
 #endif
+	} else if (os_strcmp(buf, "P2P_REMOVE_IDENTITY") == 0) {
+		if (wpas_p2p_remove_all_identity(wpa_s))
+			reply_len = -1;
+#ifdef CONFIG_TESTING_OPTIONS
+	} else if (os_strncmp(buf, "P2P_PMK_GET", 12) == 0) {
+		reply_len = p2p_ctrl_pmk_get(wpa_s, reply, reply_size);
+#endif /* CONFIG_TESTING_OPTIONS */
 #endif /* CONFIG_P2P */
 #ifdef CONFIG_WIFI_DISPLAY
 	} else if (os_strncmp(buf, "WFD_SUBELEM_SET ", 16) == 0) {
@@ -12987,25 +13287,6 @@ char * wpa_supplicant_ctrl_iface_process(struct wpa_supplicant *wpa_s,
 	} else if (os_strncmp(buf, "HS20_GET_NAI_HOME_REALM_LIST ", 29) == 0) {
 		if (hs20_get_nai_home_realm_list(wpa_s, buf + 29) < 0)
 			reply_len = -1;
-	} else if (os_strncmp(buf, "HS20_ICON_REQUEST ", 18) == 0) {
-		if (hs20_icon_request(wpa_s, buf + 18, 0) < 0)
-			reply_len = -1;
-	} else if (os_strncmp(buf, "REQ_HS20_ICON ", 14) == 0) {
-		if (hs20_icon_request(wpa_s, buf + 14, 1) < 0)
-			reply_len = -1;
-	} else if (os_strncmp(buf, "GET_HS20_ICON ", 14) == 0) {
-		reply_len = get_hs20_icon(wpa_s, buf + 14, reply, reply_size);
-	} else if (os_strncmp(buf, "DEL_HS20_ICON ", 14) == 0) {
-		if (del_hs20_icon(wpa_s, buf + 14) < 0)
-			reply_len = -1;
-	} else if (os_strcmp(buf, "FETCH_OSU") == 0) {
-		if (hs20_fetch_osu(wpa_s, 0) < 0)
-			reply_len = -1;
-	} else if (os_strcmp(buf, "FETCH_OSU no-scan") == 0) {
-		if (hs20_fetch_osu(wpa_s, 1) < 0)
-			reply_len = -1;
-	} else if (os_strcmp(buf, "CANCEL_FETCH_OSU") == 0) {
-		hs20_cancel_fetch_osu(wpa_s);
 #endif /* CONFIG_HS20 */
 	} else if (os_strncmp(buf, WPA_CTRL_RSP, os_strlen(WPA_CTRL_RSP)) == 0)
 	{
@@ -13386,6 +13667,9 @@ char * wpa_supplicant_ctrl_iface_process(struct wpa_supplicant *wpa_s,
 	} else if (os_strncmp(buf, "ML_PROBE_REQ ", 13) == 0) {
 		if (wpas_ctrl_ml_probe(wpa_s, buf + 13))
 			reply_len = -1;
+	} else if (os_strncmp(buf, "TEST_RSNXE_DATA ", 16) == 0) {
+		if (wpas_ctrl_test_rsnxe_data(wpa_s, buf + 16) < 0)
+			reply_len = -1;
 #endif /* CONFIG_TESTING_OPTIONS */
 	} else if (os_strncmp(buf, "VENDOR_ELEM_ADD ", 16) == 0) {
 		if (wpas_ctrl_vendor_elem_add(wpa_s, buf + 16) < 0)
@@ -13592,6 +13876,11 @@ char * wpa_supplicant_ctrl_iface_process(struct wpa_supplicant *wpa_s,
 	} else if (os_strncmp(buf, "NAN_TRANSMIT ", 13) == 0) {
 		if (wpas_ctrl_nan_transmit(wpa_s, buf + 13) < 0)
 			reply_len = -1;
+	} else if (os_strncmp(buf, "NAN_UNPAUSE_PUBLISH ", 20) == 0) {
+		if (wpas_ctrl_nan_unpause_publish(wpa_s, buf + 20) < 0)
+			reply_len = -1;
+	} else if (os_strcmp(buf, "NAN_FLUSH") == 0) {
+		wpas_nan_usd_flush(wpa_s);
 #endif /* CONFIG_NAN_USD */
 #ifdef CONFIG_PASN
 	} else if (os_strncmp(buf, "PASN_START ", 11) == 0) {
@@ -13630,6 +13919,14 @@ char * wpa_supplicant_ctrl_iface_process(struct wpa_supplicant *wpa_s,
 	} else if (os_strcmp(buf, "MLO_SIGNAL_POLL") == 0) {
 		reply_len = wpas_ctrl_iface_mlo_signal_poll(wpa_s, reply,
 							    reply_size);
+	} else if (os_strcmp(buf, "NEW_RANDOM_MAC_ADDRESS") == 0) {
+		enum wpas_mac_addr_style mac_addr_style =
+			wpa_s->conf->preassoc_mac_addr;
+
+		wpa_s->conf->preassoc_mac_addr = WPAS_MAC_ADDR_STYLE_RANDOM;
+		if (wpas_update_random_addr_disassoc(wpa_s) != 1)
+			reply_len = -1;
+		wpa_s->conf->preassoc_mac_addr = mac_addr_style;
 	} else {
 		os_memcpy(reply, "UNKNOWN COMMAND\n", 16);
 		reply_len = 16;
@@ -13947,6 +14244,8 @@ static char * wpas_global_ctrl_iface_redir_p2p(struct wpa_global *global,
 #ifdef CONFIG_AP
 		"STA-FIRST",
 #endif /* CONFIG_AP */
+		"P2P_GET_DIRA",
+		"P2P_VALIDATE_DIRA",
 		NULL
 	};
 	static const char * prefix[] = {
@@ -13985,6 +14284,7 @@ static char * wpas_global_ctrl_iface_redir_p2p(struct wpa_global *global,
 		"NFC_REPORT_HANDOVER ",
 		"P2P_ASP_PROVISION ",
 		"P2P_ASP_PROVISION_RESP ",
+		"NAN_",
 #ifdef CONFIG_AP
 		"STA ",
 		"STA-NEXT ",

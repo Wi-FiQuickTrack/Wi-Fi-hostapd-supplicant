@@ -22,10 +22,14 @@
 #include "common/defs.h"
 #include "common/ieee802_11_defs.h"
 #include "common/wpa_common.h"
+#include "common/nan.h"
 #ifdef CONFIG_MACSEC
 #include "pae/ieee802_1x_kay.h"
 #endif /* CONFIG_MACSEC */
 #include "utils/list.h"
+
+struct nan_subscribe_params;
+struct nan_publish_params;
 
 #define HOSTAPD_CHAN_DISABLED 0x00000001
 #define HOSTAPD_CHAN_NO_IR 0x00000002
@@ -155,6 +159,12 @@ struct hostapd_channel_data {
 	 * need to set this)
 	 */
 	long double interference_factor;
+
+	/**
+	 * interference_bss_based - Indicates whether the interference was
+	 * calculated from number of BSSs
+	 */
+	bool interference_bss_based;
 #endif /* CONFIG_ACS */
 
 	/**
@@ -314,6 +324,27 @@ struct hostapd_hw_modes {
 	 * eht_capab - EHT (IEEE 802.11be) capabilities
 	 */
 	struct eht_capabilities eht_capab[IEEE80211_MODE_NUM];
+};
+
+
+/**
+ * struct hostapd_multi_hw_info: Supported multiple underlying hardware info
+ */
+struct hostapd_multi_hw_info {
+	/**
+	 * hw_idx - Hardware index
+	 */
+	u8 hw_idx;
+
+	/**
+	 * start_freq - Frequency range start in MHz
+	 */
+	int start_freq;
+
+	/**
+	 * end_freq - Frequency range end in MHz
+	 */
+	int end_freq;
 };
 
 
@@ -877,6 +908,14 @@ struct hostapd_freq_params {
 	bool eht_enabled;
 
 	/**
+	 * punct_bitmap - Preamble puncturing bitmap
+	 * Each bit corresponds to a 20 MHz subchannel, the lowest bit for the
+	 * channel with the lowest frequency. A bit set to 1 indicates that the
+	 * subchannel is punctured, otherwise active.
+	 */
+	u16 punct_bitmap;
+
+	/**
 	 * link_id: If >=0 indicates the link of the AP MLD to configure
 	 */
 	int link_id;
@@ -1373,6 +1412,26 @@ struct wpa_driver_associate_params {
 	 * mld_params - MLD association parameters
 	 */
 	struct wpa_driver_mld_params mld_params;
+
+	/**
+	 * rsn_overriding - wpa_supplicant RSN overriding support
+	 */
+	bool rsn_overriding;
+
+	/**
+	 * spp_amsdu - SPP A-MSDU used on this connection
+	 */
+	bool spp_amsdu;
+
+	/**
+	 * bssid_filter - Allowed BSSIDs for the current association
+	 * This can be %NULL to indicate no constraint. */
+	const u8 *bssid_filter;
+
+	/**
+	 * bssid_filter_count - Number of allowed BSSIDs
+	 */
+	unsigned int bssid_filter_count;
 };
 
 enum hide_ssid {
@@ -1615,11 +1674,6 @@ struct wpa_driver_ap_params {
 	 * disable_dgaf - Whether group-addressed frames are disabled
 	 */
 	int disable_dgaf;
-
-	/**
-	 * osen - Whether OSEN security is enabled
-	 */
-	int osen;
 
 	/**
 	 * freq - Channel parameters for dynamic bandwidth changes
@@ -1998,10 +2052,17 @@ struct wpa_driver_set_key_params {
 	 * %KEY_FLAG_GROUP_TX_DEFAULT
 	 *  GTK key valid for TX only, immediately taking over TX.
 	 * %KEY_FLAG_PAIRWISE_RX_TX
-	 *  Pairwise key immediately becoming the active pairwise key.
+	 *  Pairwise key immediately becoming the active pairwise key. If this
+	 *  key was previously set as an alternative RX-only key with
+	 *  %KEY_FLAG_PAIRWISE_RX | %KEY_FLAG_NEXT, the alternative RX-only key
+	 *  is taken into use for both TX and RX without changing the RX counter
+	 *  values.
 	 * %KEY_FLAG_PAIRWISE_RX
 	 *  Pairwise key not yet valid for TX. (Only usable when Extended
-	 *  Key ID is supported by the driver.)
+	 *  Key ID is supported by the driver or when configuring the next TK
+	 *  for RX-only with %KEY_FLAG_NEXT in which case the new TK can be used
+	 *  as an alternative key for decrypting received frames without
+	 *  replacing the possibly already configured old TK.)
 	 * %KEY_FLAG_PAIRWISE_RX_TX_MODIFY
 	 *  Enable TX for a pairwise key installed with
 	 *  KEY_FLAG_PAIRWISE_RX.
@@ -2113,7 +2174,6 @@ struct wpa_driver_capa {
 #define WPA_DRIVER_CAPA_KEY_MGMT_FT_SAE		0x00100000
 #define WPA_DRIVER_CAPA_KEY_MGMT_FT_802_1X_SHA384	0x00200000
 #define WPA_DRIVER_CAPA_KEY_MGMT_CCKM		0x00400000
-#define WPA_DRIVER_CAPA_KEY_MGMT_OSEN		0x00800000
 #define WPA_DRIVER_CAPA_KEY_MGMT_SAE_EXT_KEY	0x01000000
 #define WPA_DRIVER_CAPA_KEY_MGMT_FT_SAE_EXT_KEY	0x02000000
 	/** Bitfield of supported key management suites */
@@ -2340,6 +2400,16 @@ struct wpa_driver_capa {
 #define WPA_DRIVER_FLAGS2_SAE_OFFLOAD_AP	0x0000000000100000ULL
 /** Driver supports TWT responder in HT and VHT modes */
 #define WPA_DRIVER_FLAGS2_HT_VHT_TWT_RESPONDER	0x0000000000200000ULL
+/** Driver supports RSN override elements */
+#define WPA_DRIVER_FLAGS2_RSN_OVERRIDE_STA	0x0000000000400000ULL
+/** Driver supports NAN offload */
+#define WPA_DRIVER_FLAGS2_NAN_OFFLOAD		0x0000000000800000ULL
+/** Driver/device supports SPP A-MSDUs */
+#define WPA_DRIVER_FLAGS2_SPP_AMSDU		0x0000000001000000ULL
+/** Driver supports P2P V2 */
+#define WPA_DRIVER_FLAGS2_P2P_FEATURE_V2	0x0000000002000000ULL
+/** Driver supports P2P PCC mode */
+#define WPA_DRIVER_FLAGS2_P2P_FEATURE_PCC_MODE	0x0000000004000000ULL
 	u64 flags2;
 
 #define FULL_AP_CLIENT_STATE_SUPP(drv_flags) \
@@ -2460,6 +2530,10 @@ struct wpa_driver_capa {
 	unsigned int mbssid_max_interfaces;
 	/* Maximum profile periodicity for enhanced MBSSID advertisement */
 	unsigned int ema_max_periodicity;
+
+	/* Maximum number of bytes of extra IE(s) that can be added to Probe
+	 * Request frames */
+	size_t max_probe_req_ie_len;
 };
 
 
@@ -2566,6 +2640,7 @@ struct hostapd_sta_add_params {
 	bool mld_link_sta;
 	s8 mld_link_id;
 	const u8 *mld_link_addr;
+	u16 eml_cap;
 };
 
 struct mac_address {
@@ -2613,6 +2688,7 @@ struct wpa_bss_params {
 #define WPA_STA_TDLS_PEER BIT(4)
 #define WPA_STA_AUTHENTICATED BIT(5)
 #define WPA_STA_ASSOCIATED BIT(6)
+#define WPA_STA_SPP_AMSDU BIT(7)
 
 enum tdls_oper {
 	TDLS_DISCOVERY_REQ,
@@ -2740,7 +2816,6 @@ struct beacon_data {
  * @beacon_after: Next beacon/probe resp/asooc resp info
  * @counter_offset_beacon: Offset to the count field in beacon's tail
  * @counter_offset_presp: Offset to the count field in probe resp.
- * @punct_bitmap - Preamble puncturing bitmap
  * @link_id: Link ID to determine the link for MLD; -1 for non-MLD
  * @ubpr: Unsolicited broadcast Probe Response frame data
  */
@@ -2755,7 +2830,6 @@ struct csa_settings {
 	u16 counter_offset_beacon[2];
 	u16 counter_offset_presp[2];
 
-	u16 punct_bitmap;
 	int link_id;
 
 	struct unsol_bcast_probe_resp ubpr;
@@ -3110,6 +3184,53 @@ struct wpa_driver_ops {
 	 * key indexes. In most cases, WPA uses only key indexes 1 and 2 for
 	 * broadcast keys, so key index 0 is available for this kind of
 	 * configuration.
+	 *
+	 * For pairwise keys, there are potential race conditions between
+	 * enabling a new TK on each end of the connection and sending the first
+	 * protected frame. Drivers have multiple options on which style of key
+	 * configuration to support with the simplest option not providing any
+	 * protection for the race condition while the more complex options do
+	 * provide partial or full protection.
+	 *
+	 * Option 1: Do not support extended key IDs (i.e., use only Key ID 0
+	 * for pairwise keys) and do not support configuration of the next TK
+	 * as an alternative RX key. This provides no protection, but is simple
+	 * to support. The driver needs to ignore set_key() calls with
+	 * KEY_FLAG_NEXT.
+	 *
+	 * Option 2: Do not support extended key IDs (i.e., use only Key ID 0
+	 * for pairwise keys), but support configuration of the next TK as an
+	 * alternative RX key for the initial 4-way handshake. This provides
+	 * protection for the initial key setup at the beginning of an
+	 * association. The driver needs to configure the initial TK for RX-only
+	 * when receiving a set_key() call with KEY_FLAG_NEXT. This RX-only key
+	 * is ready for receiving protected Data frames from the peer before the
+	 * local device has enabled the key for TX. Unprotected EAPOL frames
+	 * need to be allowed even when this next TK is configured as RX-only
+	 * key. The same key is then set with KEY_FLAG_PAIRWISE_RX_TX to enable
+	 * its use for both TX and RX. The driver ignores set_key() calls with
+	 * KEY_FLAG_NEXT when a TK has been configured. When fully enabling the
+	 * TK for TX and RX, the RX counters associated with the TK must not be
+	 * cleared.
+	 *
+	 * Option 3: Same as option 2, but the driver supports multiple RX keys
+	 * in parallel during PTK rekeying. The driver processed set_key() calls
+	 * with KEY_FLAG_NEXT also when a TK has been configured. At that point
+	 * in the rekeying sequence the driver uses the previously configured TK
+	 * for TX and decrypts received frames with either the previously
+	 * configured TK or the next TK (RX-only).
+	 *
+	 * Option 4: The driver supports extended Key IDs and they are used for
+	 * an association but does not support KEY_FLAG_NEXT (options 2 and 3).
+	 * The next TK is configured as RX-only with KEY_FLAG_PAIRWISE_RX and
+	 * it is enabled for TX and RX with KEY_FLAG_PAIRWISE_RX_TX_MODIFY. When
+	 * extended key ID is not used for an association, the driver behaves
+	 * like in option 1.
+	 *
+	 * Option 5 and 6: Like option 4 but with support for KEY_FLAG_NEXT as
+	 * described above for options 2 and 3, respectively. Option 4 is used
+	 * for cases where extended key IDs are used for an association. Option
+	 * 2 or 3 is used for cases where extended key IDs are not used.
 	 *
 	 * Please note that TKIP keys include separate TX and RX MIC keys and
 	 * some drivers may expect them in different order than wpa_supplicant
@@ -3468,12 +3589,15 @@ struct wpa_driver_ops {
 	 * e.g., wpa_supplicant_event()
 	 * @ifname: interface name, e.g., wlan0
 	 * @global_priv: private driver global data from global_init()
+	 * @p2p_mode: P2P mode for a GO (not applicable for other interface
+	 *	types)
 	 * Returns: Pointer to private data, %NULL on failure
 	 *
 	 * This function can be used instead of init() if the driver wrapper
 	 * uses global data.
 	 */
-	void * (*init2)(void *ctx, const char *ifname, void *global_priv);
+	void * (*init2)(void *ctx, const char *ifname, void *global_priv,
+			enum wpa_p2p_mode p2p_mode);
 
 	/**
 	 * get_interfaces - Get information about available interfaces
@@ -4009,7 +4133,10 @@ struct wpa_driver_ops {
 	 * @bssid: BSSID (Address 3)
 	 * @data: Frame body
 	 * @data_len: data length in octets
-	 @ @no_cck: Whether CCK rates must not be used to transmit this frame
+	 * @no_cck: Whether CCK rates must not be used to transmit this frame
+	 * @link_id: Link ID of the specified link; -1 for non-MLO cases and for
+	 *	frames that target the MLD instead of a specific link in MLO
+	 *	cases
 	 * Returns: 0 on success, -1 on failure
 	 *
 	 * This command can be used to request the driver to transmit an action
@@ -4030,7 +4157,8 @@ struct wpa_driver_ops {
 	 */
 	int (*send_action)(void *priv, unsigned int freq, unsigned int wait,
 			   const u8 *dst, const u8 *src, const u8 *bssid,
-			   const u8 *data, size_t data_len, int no_cck);
+			   const u8 *data, size_t data_len, int no_cck,
+			   int link_id);
 
 	/**
 	 * send_action_cancel_wait - Cancel action frame TX wait
@@ -5204,15 +5332,19 @@ struct wpa_driver_ops {
 	/**
 	 * is_drv_shared - Check whether the driver interface is shared
 	 * @priv: Private driver interface data from init()
-	 * @bss_ctx: BSS context for %WPA_IF_AP_BSS interfaces
+	 * @link_id: Link ID to match
+	 * Returns: true if it is being used or else false.
 	 *
 	 * Checks whether the driver interface is being used by other partner
 	 * BSS(s) or not. This is used to decide whether the driver interface
 	 * needs to be deinitilized when one interface is getting deinitialized.
 	 *
-	 * Returns: true if it is being used or else false.
+	 * NOTE: @link_id will be used only when there is only one BSS
+	 * present and if that single link is active. In that case, the
+	 * link ID is matched with the active link_id to decide whether the
+	 * driver interface is being used by other partner BSS(s).
 	 */
-	bool (*is_drv_shared)(void *priv, void *bss_ctx);
+	bool (*is_drv_shared)(void *priv, int link_id);
 
 	/**
 	 * link_sta_remove - Remove a link STA from an MLD STA
@@ -5223,11 +5355,113 @@ struct wpa_driver_ops {
 	 */
 	int (*link_sta_remove)(void *priv, u8 link_id, const u8 *addr);
 
+	/**
+	 * nan_flush - Flush all NAN offload services
+	 * @priv: Private driver interface data
+	 * Returns: 0 on success, negative value on failure
+	 */
+	int (*nan_flush)(void *priv);
+
+	/**
+	 * nan_publish - NAN offload for Publish()
+	 * @priv: Private driver interface data
+	 * @src: Source P2P device addr
+	 * @publish_id: Publish instance to add
+	 * @service_name: Service name
+	 * @service_id: Service ID (6 octet value derived from service name)
+	 * @srv_proto_type: Service protocol type
+	 * @ssi: Service specific information or %NULL
+	 * @elems: Information elements for Element Container attribute or %NULL
+	 * @params: Configuration parameters
+	 * Returns: 0 on success, negative value on failure
+	 */
+	int (*nan_publish)(void *priv, const u8 *src, int publish_id,
+			   const char *service_name, const u8 *service_id,
+			   enum nan_service_protocol_type srv_proto_type,
+			   const struct wpabuf *ssi, const struct wpabuf *elems,
+			   struct nan_publish_params *params);
+
+	/**
+	 * nan_cancel_publish - NAN offload for CancelPublish()
+	 * @priv: Private driver interface data
+	 * @publish_id: Publish instance to cancel
+	 * Returns: 0 on success, negative value on failure
+	 */
+	int (*nan_cancel_publish)(void *priv, int publish_id);
+
+	/**
+	 * nan_update_publish - NAN offload for UpdatePublish()
+	 * @priv: Private driver interface data
+	 * @ssi: Service specific information or %NULL
+	 * Returns: 0 on success, negative value on failure
+	 */
+	int (*nan_update_publish)(void *priv, int publish_id,
+				  const struct wpabuf *ssi);
+
+	/**
+	 * nan_subscribe - NAN offload for Subscribe()
+	 * @priv: Private driver interface data
+	 * @src: Source P2P device addr
+	 * @subscribe_id: Subscribe instance to add
+	 * @service_name: Service name
+	 * @service_id: Service ID (6 octet value derived from service name)
+	 * @srv_proto_type: Service protocol type
+	 * @ssi: Service specific information or %NULL
+	 * @elems: Information elements for Element Container attribute or %NULL
+	 * @params: Configuration parameters
+	 * Returns: 0 on success, negative value on failure
+	 */
+	int (*nan_subscribe)(void *priv, const u8 *src, int subscribe_id,
+			     const char *service_name, const u8 *service_id,
+			     enum nan_service_protocol_type srv_proto_type,
+			     const struct wpabuf *ssi,
+			     const struct wpabuf *elems,
+			     struct nan_subscribe_params *params);
+
+	/**
+	 * nan_cancel_subscribe - NAN offload for CancelSubscribe()
+	 * @priv: Private driver interface data
+	 * @subscribe_id: Subscribe instance to cancel
+	 * Returns: 0 on success, negative value on failure
+	 */
+	int (*nan_cancel_subscribe)(void *priv, int subscribe_id);
+
+	/**
+	 * can_share_drv - Check whether driver interface can be shared
+	 * @ctx: Pointer to hostapd context
+	 * @params: Configuration for the driver wrapper
+	 * @hapd: Pointer for overwriting the hapd context or %NULL
+	 * 	if can't find a shared drv
+	 *
+	 * Checks whether the driver interface with same phy name is
+	 * already present under the global driver which can be shared
+	 * instead of creating a new driver interface instance. If present,
+	 * @hapd will be overwritten with the hapd pointer which this shared
+	 * drv's first BSS is using. This will help the caller to later call
+	 * if_add().
+	 *
+	 * Returns: true if it can be shared or else false.
+	 */
+	bool (*can_share_drv)(void *ctx, struct wpa_init_params *params,
+			      void **hapd);
+
 #ifdef CONFIG_TESTING_OPTIONS
 	int (*register_frame)(void *priv, u16 type,
 			      const u8 *match, size_t match_len,
 			      bool multicast);
 #endif /* CONFIG_TESTING_OPTIONS */
+
+	/**
+	 * get_multi_hw_info - Get multiple underlying hardware information
+	 *		       (hardware IDx and supported frequency range)
+	 * @priv: Private driver interface data
+	 * @num_multi_hws: Variable for returning the number of returned
+	 *	hardware info data
+	 * Returns: Pointer to allocated multiple hardware data on success
+	 * or %NULL on failure. Caller is responsible for freeing this.
+	 */
+	struct hostapd_multi_hw_info *
+	(*get_multi_hw_info)(void *priv, unsigned int *num_multi_hws);
 };
 
 /**
@@ -5855,6 +6089,11 @@ enum wpa_event_type {
 	 * EVENT_LINK_RECONFIG - Notification that AP links removed
 	 */
 	EVENT_LINK_RECONFIG,
+
+	/**
+	 * EVENT_MLD_INTERFACE_FREED - Notification of AP MLD interface removal
+	 */
+	EVENT_MLD_INTERFACE_FREED,
 };
 
 

@@ -100,6 +100,7 @@ const char * event_to_string(enum wpa_event_type event)
 	E2S(LINK_CH_SWITCH_STARTED);
 	E2S(TID_LINK_MAP);
 	E2S(LINK_RECONFIG);
+	E2S(MLD_INTERFACE_FREED);
 	}
 
 	return "UNKNOWN";
@@ -373,6 +374,7 @@ const char * driver_flag2_to_string(u64 flag2)
 	DF2S(MLO);
 	DF2S(SCAN_MIN_PREQ);
 	DF2S(SAE_OFFLOAD_STA);
+	DF2S(SPP_AMSDU);
 	}
 	return "UNKNOWN";
 #undef DF2S

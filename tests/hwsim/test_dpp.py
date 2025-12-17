@@ -2314,6 +2314,23 @@ def test_dpp_auto_connect_legacy_sae_2(dev, apdev):
     finally:
         dev[0].set("dpp_config_processing", "0", allow_fail=True)
 
+def test_dpp_auto_connect_legacy_sae_3(dev, apdev):
+    """DPP and auto connect (legacy SAE with short password)"""
+    try:
+        run_dpp_auto_connect_legacy(dev, apdev, conf='sta-sae', sae_only=True,
+                                    password="1234567")
+    finally:
+        dev[0].set("dpp_config_processing", "0", allow_fail=True)
+
+def test_dpp_auto_connect_legacy_sae_pw_id(dev, apdev):
+    """DPP and auto connect (legacy SAE with password identifier)"""
+    check_dpp_capab(dev[0], min_ver=3)
+    try:
+        run_dpp_auto_connect_legacy(dev, apdev, conf='sta-sae', sae_only=True,
+                                    password_id="id")
+    finally:
+        dev[0].set("dpp_config_processing", "0", allow_fail=True)
+
 def test_dpp_auto_connect_legacy_psk_sae_1(dev, apdev):
     """DPP and auto connect (legacy PSK+SAE)"""
     try:
@@ -2339,16 +2356,22 @@ def test_dpp_auto_connect_legacy_psk_sae_3(dev, apdev):
 
 def run_dpp_auto_connect_legacy(dev, apdev, conf='sta-psk',
                                 ssid_charset=None,
-                                psk_sae=False, sae_only=False):
+                                psk_sae=False, sae_only=False,
+                                password="secret passphrase",
+                                password_id=None):
     check_dpp_capab(dev[0])
     check_dpp_capab(dev[1])
 
-    params = hostapd.wpa2_params(ssid="dpp-legacy",
-                                 passphrase="secret passphrase")
-    if sae_only:
-            params['wpa_key_mgmt'] = 'SAE'
-            params['ieee80211w'] = '2'
-    elif psk_sae:
+    if sae_only and password_id:
+        params = hostapd.wpa3_params(ssid="dpp-legacy",
+                                     password=password + '|id=' + password_id)
+    elif sae_only:
+        params = hostapd.wpa3_params(ssid="dpp-legacy",
+                                     password=password)
+    else:
+        params = hostapd.wpa2_params(ssid="dpp-legacy",
+                                     passphrase=password)
+    if psk_sae:
             params['wpa_key_mgmt'] = 'WPA-PSK SAE'
             params['ieee80211w'] = '1'
             params['sae_require_mfp'] = '1'
@@ -2363,7 +2386,7 @@ def run_dpp_auto_connect_legacy(dev, apdev, conf='sta-psk',
     dev[0].dpp_listen(2412)
     dev[1].dpp_auth_init(uri=uri0, conf=conf, ssid="dpp-legacy",
                          ssid_charset=ssid_charset,
-                         passphrase="secret passphrase")
+                         passphrase=password, password_id=password_id)
     wait_auth_success(dev[0], dev[1], configurator=dev[1], enrollee=dev[0])
     if ssid_charset:
         ev = dev[0].wait_event(["DPP-CONFOBJ-SSID-CHARSET"], timeout=1)
@@ -7860,3 +7883,39 @@ def test_dpp_discard_public_action(dev, apdev):
         raise Exception("Failure not reported")
     if "No Auth Confirm received" not in ev:
         raise Exception("Unexpected failure reason: " + ev)
+
+def test_dpp_proto_stop_after_auth_hostapd(dev, apdev):
+    """DPP protocol testing - stop after authentication exchange - hostapd Configurator behavior"""
+    check_dpp_capab(dev[0])
+
+    params = {"ssid": "dpp",
+              "wpa": "2",
+              "wpa_key_mgmt": "DPP",
+              "ieee80211w": "2",
+              "rsn_pairwise": "CCMP",
+              "dpp_connector": params1_ap_connector,
+              "dpp_csign": params1_csign,
+              "dpp_netaccesskey": params1_ap_netaccesskey}
+    try:
+        hapd = hostapd.add_ap(apdev[0], params)
+    except:
+        raise HwsimSkip("DPP not supported")
+
+    conf_id = hapd.dpp_configurator_add()
+    hapd.set("dpp_configurator_params",
+             " conf=sta-dpp configurator=%d" % conf_id)
+
+    dev[0].set("dpp_test", "89")
+    id0 = dev[0].dpp_bootstrap_gen(chan="81/1", mac=True)
+    uri0 = dev[0].request("DPP_BOOTSTRAP_GET_URI %d" % id0)
+    dev[0].dpp_listen(2412)
+
+    hapd.dpp_auth_init(uri=uri0, role="configurator", configurator=conf_id,
+                       conf="sta-dpp")
+    ev = hapd.wait_event(["DPP-AUTH-SUCCESS"], timeout=10)
+    if ev is None:
+        raise Exception("DPP authentication did not succeed")
+
+    ev = hapd.wait_event(["DPP-CONF-FAILED"], timeout=11)
+    if ev is None:
+        raise Exception("DPP config failure not reported")

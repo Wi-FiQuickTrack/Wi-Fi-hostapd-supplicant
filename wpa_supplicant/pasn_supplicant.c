@@ -174,7 +174,7 @@ static int wpas_pasn_get_params_from_bss(struct wpa_supplicant *wpa_s,
 		}
 	}
 
-	rsne = wpa_bss_get_ie(bss, WLAN_EID_RSN);
+	rsne = wpa_bss_get_rsne(wpa_s, bss, NULL, false);
 	if (!rsne) {
 		wpa_printf(MSG_DEBUG, "PASN: BSS without RSNE");
 		return -1;
@@ -186,7 +186,7 @@ static int wpas_pasn_get_params_from_bss(struct wpa_supplicant *wpa_s,
 		return -1;
 	}
 
-	rsnxe = wpa_bss_get_ie(bss, WLAN_EID_RSNX);
+	rsnxe = wpa_bss_get_rsnxe(wpa_s, bss, NULL, false);
 
 	ssid_str_len = bss->ssid_len;
 	ssid_str = bss->ssid;
@@ -251,13 +251,13 @@ static int wpas_pasn_get_params_from_bss(struct wpa_supplicant *wpa_s,
 #endif /* CONFIG_SHA384 */
 #endif /* CONFIG_IEEE80211R */
 #ifdef CONFIG_SAE
-	} else if ((sel & WPA_KEY_MGMT_SAE_EXT_KEY) &&
+	} else if ((sel & WPA_KEY_MGMT_SAE_EXT_KEY) && ssid &&
 		   (ieee802_11_rsnx_capab(rsnxe,
 					   WLAN_RSNX_CAPAB_SAE_H2E)) &&
 		   (wpas_pasn_sae_setup_pt(ssid, group) == 0)) {
 		key_mgmt = WPA_KEY_MGMT_SAE_EXT_KEY;
 		wpa_printf(MSG_DEBUG, "PASN: using KEY_MGMT SAE (ext key)");
-	} else if ((sel & WPA_KEY_MGMT_SAE) &&
+	} else if ((sel & WPA_KEY_MGMT_SAE) && ssid &&
 		   (ieee802_11_rsnx_capab(rsnxe,
 					   WLAN_RSNX_CAPAB_SAE_H2E)) &&
 		   (wpas_pasn_sae_setup_pt(ssid, group) == 0)) {
@@ -480,7 +480,7 @@ static struct wpa_bss * wpas_pasn_allowed(struct wpa_supplicant *wpa_s,
 		return NULL;
 	}
 
-	rsne = wpa_bss_get_ie(bss, WLAN_EID_RSN);
+	rsne = wpa_bss_get_rsne(wpa_s, bss, NULL, false);
 	if (!rsne) {
 		wpa_printf(MSG_DEBUG, "PASN: BSS without RSNE");
 		return NULL;
@@ -544,13 +544,13 @@ static void wpas_pasn_auth_start_cb(struct wpa_radio_work *work, int deinit)
 		goto fail;
 	}
 
-	rsne = wpa_bss_get_ie(bss, WLAN_EID_RSN);
+	rsne = wpa_bss_get_rsne(wpa_s, bss, NULL, false);
 	if (!rsne) {
 		wpa_printf(MSG_DEBUG, "PASN: BSS without RSNE");
 		goto fail;
 	}
 
-	rsnxe = wpa_bss_get_ie(bss, WLAN_EID_RSNX);
+	rsnxe = wpa_bss_get_rsnxe(wpa_s, bss, NULL, false);
 
 	derive_kdk = (wpa_s->drv_flags2 & WPA_DRIVER_FLAGS2_SEC_LTF_STA) &&
 		ieee802_11_rsnx_capab(rsnxe,
@@ -583,6 +583,10 @@ static void wpas_pasn_auth_start_cb(struct wpa_radio_work *work, int deinit)
 		capab |= BIT(WLAN_RSNX_CAPAB_SECURE_RTT);
 	if (wpa_s->drv_flags2 & WPA_DRIVER_FLAGS2_PROT_RANGE_NEG_STA)
 		capab |= BIT(WLAN_RSNX_CAPAB_URNM_MFPR);
+	if ((wpa_s->drv_flags2 & WPA_DRIVER_FLAGS2_SPP_AMSDU) &&
+	    ieee802_11_rsnx_capab(rsnxe, WLAN_RSNX_CAPAB_SPP_A_MSDU))
+		capab |= BIT(WLAN_RSNX_CAPAB_SPP_A_MSDU);
+
 	pasn_set_rsnxe_caps(pasn, capab);
 	pasn_register_callbacks(pasn, wpa_s, wpas_pasn_send_mlme, NULL);
 	ssid = wpa_config_get_network(wpa_s->conf, awork->network_id);
@@ -805,6 +809,9 @@ int wpas_pasn_auth_rx(struct wpa_supplicant *wpa_s,
 
 	if (!wpa_s->pasn_auth_work)
 		return -2;
+
+	wpabuf_free(pasn->frame);
+	pasn->frame = NULL;
 
 	pasn_register_callbacks(pasn, wpa_s, wpas_pasn_send_mlme, NULL);
 	ret = wpa_pasn_auth_rx(pasn, (const u8 *) mgmt, len, &pasn_data);
